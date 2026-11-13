@@ -104,22 +104,33 @@ struct PlaybackIndicatorFilter {
             guard let self else { return }
             self.connected = false
             self.player.suspend()
+            self.updateClock()
             self.playbackIndicator.notePlaybackCommand()
             self.updatePlaybackIndicator()
             self.status = message
             self.writeDiagnostics()
         }
         bridge.start()
+        updateClock()
+        terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stop() }
+            }
+    }
+
+    private func updateClock() {
+        guard started, player.isPlaying else {
+            clock?.invalidate()
+            clock = nil
+            return
+        }
+        guard clock == nil else { return }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.player.tick() }
         }
         timer.tolerance = 0.01
         clock = timer
         RunLoop.main.add(timer, forMode: .common)
-        terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
-            object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stop() }
-            }
     }
 
     func stop() { pendingEmpty?.cancel(); pendingIndicator?.cancel(); bridge.stop(); clock?.invalidate(); clock = nil; lyricTask?.cancel() }
@@ -129,6 +140,7 @@ struct PlaybackIndicatorFilter {
         lyricTask?.cancel()
         latestRemoteSample = nil
         player.clear()
+        updateClock()
         playbackIndicator.notePlaybackCommand()
         updatePlaybackIndicator()
         lyrics.lyrics = []
@@ -165,6 +177,7 @@ struct PlaybackIndicatorFilter {
         let oldLine = lyrics.lyrics.first { $0.id == oldID } ?? lyrics.heldLine
         latestRemoteSample = snapshot
         player.accept(snapshot, origin: origin)
+        updateClock()
         if let previousSong, previousSong.name != player.currentSong?.name || previousSong.artist != player.currentSong?.artist {
             playbackIndicator.noteTrackSwitch(at: ProcessInfo.processInfo.systemUptime)
         }

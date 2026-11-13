@@ -15,7 +15,7 @@ Flowflow 是 macOS 上的悬浮歌词工具。它读取网易云音乐、QQ 音�
 
 当前版本面向 Apple Silicon Mac，需要 macOS 15 或更高版本。播放信息来自已安装并运行的受支持播放器；在线歌词是否可用取决于歌曲和服务状态。
 
-[下载 Flowflow 1.0.98（macOS，Apple Silicon）](https://github.com/wi111im/Flowflow/raw/refs/heads/main/downloads/Flowflow-1.0.98-macOS-arm64.zip)
+[下载 Flowflow 1.0.113（macOS，Apple Silicon）](https://github.com/wi111im/Flowflow/releases/download/v1.0.113/Flowflow-1.0.113-macOS-arm64.zip)
 
 从源码构建需要 Xcode 命令行工具和 Python 3：
 
@@ -37,7 +37,7 @@ Flowflow 官方版本免费提供。GPLv3 允许他人对符合许可的复制�
 
 Flowflow 包含基于 [MeloX](https://github.com/youshen2/MeloX) 修改的代码，主体代码按 [GNU General Public License version 3](LICENSE) 发布。复制、修改或分发本项目时，请遵守该许可证关于提供对应源代码、保留版权声明和按相同许可证分发等条件；具体条款以 `LICENSE` 为准。
 
-第三方代码、资源和模型继续适用各自的许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。上游 MeloX 对 PV Tool 和 BeatNet 分别有独立许可说明；本次对 Flowflow 1.0.98 macOS 构建的检查未发现 PV Tool 模板或 BeatNet 模型文件。本项目的部分继承的本地化文字仍提及它们；这不表示它们的许可证覆盖本项目的其他部分。
+第三方代码、资源和模型继续适用各自的许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。上游 MeloX 对 PV Tool 和 BeatNet 分别有独立许可说明；本次对 Flowflow 1.0.113 macOS 构建的检查未发现 PV Tool 模板或 BeatNet 模型文件。本项目的部分继承的本地化文字仍提及它们；这不表示它们的许可证覆盖本项目的其他部分。
 
 源代码包含重建本版本所需的构建脚本、程序代码和随应用发布的资源；音乐、封面和在线歌词仍属于各自权利人，不因本项目的代码许可而改变权利归属。
 

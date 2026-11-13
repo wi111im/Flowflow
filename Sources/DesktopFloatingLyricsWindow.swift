@@ -14,6 +14,7 @@ struct DesktopFloatingLyricsWindow: View {
     @AppStorage("floatingLyrics.projectionStrength") private var projectionStrength = 0.45
     @AppStorage("floatingLyrics.blackOutline") private var blackOutline = false
     @AppStorage("floatingLyrics.characterFloat") private var characterFloat = true
+    @AppStorage("animation.targetFPS") private var targetFPS = AnimationFrameRate.defaultValue
     @AppStorage("floatingLyrics.floatAmplitude") private var floatAmplitude = 6.0
     @AppStorage("floatingLyrics.artworkColorEnabled") private var artworkColorEnabled = true
     @AppStorage("floatingLyrics.customColorEnabled") private var customColorEnabled = false
@@ -79,6 +80,35 @@ struct DesktopFloatingLyricsWindow: View {
 
     private var fontScale: CGFloat {
         CGFloat(model.settings.floatingLyrics.fontScale)
+    }
+
+    // Size the menu preview for the actual lines instead of clipping them to
+    // a fixed-height box. A conservative width leaves room for font metrics.
+    private var menuPreviewHeight: CGFloat {
+        let width: CGFloat = 260
+        func height(_ text: String, size: CGFloat) -> CGFloat {
+            let font = NSFont(name: preferences.fontFamily, size: size)
+                ?? NSFont.systemFont(ofSize: size, weight: .bold)
+            let bounds = (text as NSString).boundingRect(
+                with: NSSize(width: width, height: 10000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font])
+            return ceil(bounds.height * 1.2) + 4
+        }
+        if showsInstrumentalDots { return 145 }
+        if showsSongInformation, let song = model.player.currentSong {
+            return max(145, height(song.name, size: 26 * fontScale)
+                + height(song.artist, size: 14 * fontScale) + 48)
+        }
+        var result: CGFloat = 48
+        for row in visibleLyricRows {
+            result += height(row.line.text, size: (row.isFocused ? 26 : 17) * fontScale)
+            if row.isFocused, preferences.showsTranslation, let translation = row.line.translation, !translation.isEmpty {
+                result += height(translation, size: 14 * fontScale) + CGFloat(preferences.lineSpacing)
+            }
+            result += CGFloat(preferences.lineSpacing)
+        }
+        return max(145, result)
     }
 
     private var preferences: FloatingLyricsPreferences {
@@ -154,6 +184,7 @@ struct DesktopFloatingLyricsWindow: View {
                 floatingBody
             }
         }
+        .frame(height: menuPreview ? menuPreviewHeight : nil)
         .task(id: model.player.isPlaying) {
             if model.player.isPlaying {
                 floatClockRunning = true
@@ -280,8 +311,10 @@ struct DesktopFloatingLyricsWindow: View {
                         lyricRow(line: line, isFocused: true, forceTranslation: true, projectionOnly: true)
                             .accessibilityHidden(true).allowsHitTesting(false)
                     }
-                    lyricRow(line: line, isFocused: true, forceTranslation: true, glowOnly: true)
-                        .accessibilityHidden(true).allowsHitTesting(false)
+                    if !menuPreview && preferences.textEffect == .glow && preferences.glowIntensity > 0 {
+                        lyricRow(line: line, isFocused: true, forceTranslation: true, glowOnly: true)
+                            .accessibilityHidden(true).allowsHitTesting(false)
+                    }
                     lyricRow(line: line, isFocused: true, forceTranslation: true)
                 }
                     .transition(lyricsSwapTransition)
@@ -313,8 +346,10 @@ struct DesktopFloatingLyricsWindow: View {
                         lyricRows(backgroundOnly: false, projectionOnly: true)
                             .accessibilityHidden(true).allowsHitTesting(false)
                     }
-                    lyricRows(backgroundOnly: false, glowOnly: true)
-                        .accessibilityHidden(true).allowsHitTesting(false)
+                    if !menuPreview && preferences.textEffect == .glow && preferences.glowIntensity > 0 {
+                        lyricRows(backgroundOnly: false, glowOnly: true)
+                            .accessibilityHidden(true).allowsHitTesting(false)
+                    }
                     lyricRows(backgroundOnly: false)
                 }
                 .frame(maxWidth: .infinity, alignment: frameAlignment)
@@ -429,7 +464,6 @@ struct DesktopFloatingLyricsWindow: View {
         let preparedText = timedText(for: line, preserveShared: isFocused && !preferences.showsNextLine && !reduceMotion)
         let animates = (floatClockRunning && characterFloat && !reduceMotion)
             || (model.player.isPlaying && isFocused && !line.syllables.isEmpty)
-        let lyricTime = model.lyrics.heldLine?.id == line.id ? model.lyrics.heldTime : model.player.estimatedProgress()
         let scale: CGFloat = isFocused ? 1 : 17.0 / 26.0
         let anchor = UnitPoint(x: textAlignment == .leading ? 0 : textAlignment == .trailing ? 1 : 0.5, y: 0)
         return VStack(alignment: .leading, spacing: preferences.lineSpacing) {
@@ -438,15 +472,15 @@ struct DesktopFloatingLyricsWindow: View {
                                backgroundOnly: backgroundOnly, glowOnly: glowOnly, projectionOnly: projectionOnly)
             }
             ScaledLyricLayout(scale: scale) {
-            TimelineView(.animation(minimumInterval: 1.0 / 60,
-                                    paused: !animates)) { context in
+            TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS),
+                                    paused: !animates || backgroundOnly)) { context in
                 preparedText
                     // Shape and wrap once at the final size; animate its transform.
                     .font(LyricsFontFamily.font(preferences.fontFamily, size: 26 * fontScale,
                                                weight: preferences.fontWeight.swiftUIWeight))
                     .foregroundStyle(primaryTextColor.opacity(preferences.textOpacity))
                     .textRenderer(FloatingCharacterRenderer(
-                        time: lyricTime,
+                        time: model.lyrics.heldLine?.id == line.id ? model.lyrics.heldTime : model.player.estimatedProgress(),
                         amplitude: characterFloat && !reduceMotion && floatMotion ? CGFloat(min(6, max(0, floatAmplitude))) * fontScale : 0,
                         motionTime: context.date.timeIntervalSinceReferenceDate,
                         screenProgress: screenMotion?.progress ?? 1,
@@ -465,11 +499,12 @@ struct DesktopFloatingLyricsWindow: View {
                         projectionColor: projectionColor, projectionOpacity: projectionOpacity,
                         projectionOnly: projectionOnly,
                         glowOnly: glowOnly,
-                        drawsGlow: glowOnly,
+                        drawsGlow: glowOnly || menuPreview,
+                        drawingPadding: 0,
                         focus: isFocused ? 1 : 0))
                     .animation(reduceMotion || screenMotion?.active == true ? nil : .easeInOut(duration: 0.7), value: floatMotion)
                     .animation(reduceMotion || screenMotion?.active == true ? nil : .easeInOut(duration: 0.7), value: characterFloat)
-                    .lineLimit(menuPreview ? 2 : 1)
+                    .lineLimit(menuPreview ? nil : 1)
                     .fixedSize(horizontal: !menuPreview, vertical: menuPreview)
                     .multilineTextAlignment(textAlignment)
                     .shadow(color: !glowOnly && !projectionOnly && preferences.textEffect == .shadow ? textShadowColor : .clear,
@@ -499,7 +534,7 @@ struct DesktopFloatingLyricsWindow: View {
                                 backgroundOnly: Bool, glowOnly: Bool, projectionOnly: Bool) -> some View {
             if isFocused, (preferences.showsTranslation || forceTranslation), let translation = line.translation,
                !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !animates)) { context in
+                TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS), paused: !animates || backgroundOnly)) { context in
                 motionText(translation, time: line.time)
                     .font(LyricsFontFamily.font(preferences.fontFamily, size: 14 * fontScale, weight: .medium))
                     .foregroundStyle(primaryTextColor.opacity(preferences.textOpacity * FloatingLyricsTone.unplayedOpacity))
@@ -517,8 +552,9 @@ struct DesktopFloatingLyricsWindow: View {
                         outlineOpacity: readabilityOutline, readabilityShadow: readabilityShadow,
                         projectionColor: projectionColor, projectionOpacity: projectionOpacity,
                         projectionOnly: projectionOnly,
-                        glowOnly: glowOnly, drawsGlow: glowOnly))
-                    .lineLimit(menuPreview ? 2 : 1)
+                        glowOnly: glowOnly, drawsGlow: glowOnly || menuPreview,
+                        drawingPadding: 0))
+                    .lineLimit(menuPreview ? nil : 1)
                     .fixedSize(horizontal: !menuPreview, vertical: menuPreview)
                     .multilineTextAlignment(textAlignment)
                     .shadow(color: !glowOnly && !projectionOnly && preferences.textEffect == .shadow ? textShadowColor : .clear,
@@ -784,6 +820,7 @@ private struct HoverPlaybackButton: View {
 /// Clock-driven, staggered breathing dots. The timeline sleeps while paused
 /// or when Reduce Motion is enabled, rather than running a hidden timer.
 private struct FloatingLyricsWaitingDots: View {
+    @AppStorage("animation.targetFPS") private var targetFPS = AnimationFrameRate.defaultValue
     let diameter: CGFloat
     let color: Color
     let outline: Bool
@@ -799,7 +836,7 @@ private struct FloatingLyricsWaitingDots: View {
     @State private var clockRunning = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !clockRunning)) { context in
+        TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS), paused: !clockRunning)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: diameter * 0.65) {
                 ForEach(0..<3) { index in
@@ -948,6 +985,7 @@ private struct FloatingCharacterRenderer: TextRenderer {
     var projectionOnly = false
     var glowOnly = false
     var drawsGlow = true
+    var drawingPadding: CGFloat = 0
     var focus: Double = 1
 
     var animatableData: AnimatablePair<AnimatablePair<Double, CGFloat>, Double> {
@@ -956,9 +994,8 @@ private struct FloatingCharacterRenderer: TextRenderer {
     }
 
     var displayPadding: EdgeInsets {
-        // Keep the travel drawing area unchanged when the animation starts or
-        // ends, so the text doesn't jump as the view is reconfigured.
-        EdgeInsets()
+        EdgeInsets(top: drawingPadding, leading: drawingPadding,
+                   bottom: drawingPadding, trailing: drawingPadding)
     }
 
     private enum Pass { case text, outline, halo, core, brightness }

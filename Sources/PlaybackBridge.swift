@@ -178,6 +178,7 @@ struct SongOffsetStore {
 
     func adjustOffset(by delta: Double) {
         offset = min(10, max(-10, ((offset + delta) * 10).rounded() / 10))
+        tick()
     }
 
     func estimatedProgress() -> Double {
