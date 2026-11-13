@@ -25,6 +25,12 @@ python3 build.py
 
 脚本构建 `Flowflow.app`、进行本机临时签名并运行项目自测。临时签名不是 Apple Developer ID 签名；向其他 Mac 分发时，系统可能要求额外的安全验证。
 
+## 请我喝杯咖啡
+
+如果 Flowflow 对你有帮助，欢迎自愿请我喝杯咖啡。感谢你的支持！
+
+<img src="assets/coffee.jpeg" alt="wi111im 的赞赏码" width="280">
+
 ## 许可与来源
 
 Flowflow 官方版本免费提供。GPLv3 允许他人对符合许可的复制、修改或分发行为收费；本声明不限制这些权利。第三方分发者不得虚假声称其版本由 Flowflow 官方发布、获得官方背书，或与项目维护者存在实际不存在的关联。
