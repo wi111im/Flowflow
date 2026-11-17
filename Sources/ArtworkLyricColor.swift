@@ -1,7 +1,54 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 enum ArtworkLyricColor {
+    // Keep the hue, but ensure enough contrast against a light or dark surface.
+    static func adaptiveText(_ color: (Double, Double, Double), dark: Bool) -> (Double, Double, Double) {
+        let (r, g, b) = color
+        if max(r, g, b) - min(r, g, b) < 0.08 {
+            return dark ? (1, 1, 1) : (0, 0, 0)
+        }
+        if !dark {
+            // Brighten in HSV-like space instead of mixing in black, which
+            // makes orange, cyan, olive and green look muddy.
+            let peak = max(r, g, b), floor = min(r, g, b)
+            let chroma = peak - floor
+            let value = min(0.9, max(0.8, peak))
+            let saturation = min(1, max(0.85, chroma / peak * 1.2))
+            let base = value * (1 - saturation)
+            func component(_ c: Double) -> Double { base + (c - floor) / chroma * value * saturation }
+            return (component(r), component(g), component(b))
+        }
+        func linear(_ value: Double) -> Double {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        func luminance(_ c: (Double, Double, Double)) -> Double {
+            0.2126 * linear(c.0) + 0.7152 * linear(c.1) + 0.0722 * linear(c.2)
+        }
+        let target = 0.27
+        var adjusted = color
+        if luminance(color) < target {
+            let endpoint = 1.0
+            var low = 0.0, high = 1.0
+            for _ in 0..<20 {
+                let t = (low + high) / 2
+                let mixed = (r + (endpoint - r) * t, g + (endpoint - g) * t, b + (endpoint - b) * t)
+                if luminance(mixed) >= target { high = t } else { low = t }
+            }
+            adjusted = (r + (endpoint - r) * high, g + (endpoint - g) * high, b + (endpoint - b) * high)
+        }
+        return adjusted
+    }
+
+    static func adaptiveTextColor(_ color: Color, dark: Bool) -> Color {
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance { resolved = NSColor(color).usingColorSpace(.sRGB) }
+        guard let resolved else { return dark ? .white : .black }
+        let rgb = adaptiveText((resolved.redComponent, resolved.greenComponent, resolved.blueComponent), dark: dark)
+        return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+    }
     static func load(for song: Song) async -> (Double, Double, Double)? {
         guard let data = await loadArtwork(for: song), let image = NSImage(data: data) else { return nil }
         return dominantColor(image)
@@ -141,6 +188,26 @@ enum ArtworkLyricColor {
                     consider(group, accent: (h, saturation, value))
                 }
             }
+        }
+        // Prefer the most prevalent hue across brightness and saturation
+        // variations. Exclude near-black and near-neutral pixels so large
+        // black or white backgrounds do not overwhelm the artwork's colors.
+        var dominant: ColorGroup?
+        for h in 0..<36 {
+            var group = ColorGroup()
+            for dh in -1...1 {
+                for saturation in 2..<bands {
+                    for value in 1..<bands {
+                        group.add(groups[index((h + dh + 36) % 36, saturation, value)])
+                    }
+                }
+            }
+            guard group.count * 20 >= total else { continue }
+            if dominant == nil || group.count > dominant!.count { dominant = group }
+        }
+        if let dominant {
+            let count = Double(dominant.count)
+            return (dominant.red / count, dominant.green / count, dominant.blue / count)
         }
         guard let best else { return nil }
         if let accent = chosenAccent {

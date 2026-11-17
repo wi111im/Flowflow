@@ -171,14 +171,28 @@ actor LyricsService {
 
     private func loadNetEase(_ song: Song) async throws -> LyricsResult {
         var candidates = localCandidates(named: song.name)
-        if !candidates.contains(where: { $0.score(for: song) != nil }) {
-            candidates += try await search("\(song.name) \(song.artist)")
-        }
+        do { candidates += try await search("\(song.name) \(song.artist)") }
+        catch { try Task.checkCancellation() }
         try Task.checkCancellation()
-        guard let track = candidates.compactMap({ candidate -> (TrackCandidate, Double)? in
-            candidate.score(for: song).map { (candidate, $0) }
-        }).max(by: { $0.1 < $1.1 })?.0 else { throw LyricsFailure.unmatched }
-        return try await loadNetEaseTrack(id: track.id)
+        var seen = Set<String>()
+        let matching = candidates.compactMap { candidate -> (TrackCandidate, Double)? in
+            guard seen.insert(candidate.id).inserted,
+                  LyricsQuality.versionSignature(candidate.name) == LyricsQuality.versionSignature(song.name),
+                  let score = candidate.score(for: song) else { return nil }
+            return (candidate, score)
+        }.sorted { $0.1 > $1.1 }.prefix(4)
+        guard !matching.isEmpty else { throw LyricsFailure.unmatched }
+        var selected: LyricsResult?
+        for (candidate, _) in matching {
+            do {
+                let result = try await loadNetEaseTrack(id: candidate.id)
+                if let existing = selected, !existing.lines.isEmpty, !result.lines.isEmpty,
+                   LyricsQuality.aligned(result.lines, to: existing.lines) == nil { continue }
+                if LyricsQuality.prefer(result, over: selected, duration: song.duration) { selected = result }
+            } catch { try Task.checkCancellation() }
+        }
+        guard let selected else { throw LyricsFailure.noLyrics }
+        return selected
     }
 
     private func loadNetEaseTrack(id: String) async throws -> LyricsResult {

@@ -169,11 +169,89 @@ import AppKit
         let top = LyricsPositionPreset.topCenter.displacement(ink: ink, screen: screen, visible: usable, topLimit: 870, bottomInset: 12, topCenterInset: 42)
         precondition(ink.maxY + top.y == 858)
         print("PASS: lyric position presets anchor content across sizes")
+        precondition(abs(WaitingDotsLayout.width(diameter: 18) - 77.4) < 0.001)
+        precondition(WaitingDotsLayout.width(diameter: 36) == 2 * WaitingDotsLayout.width(diameter: 18))
+        print("PASS: waiting dots reserve their full width at different sizes")
+        let whiteOnDark = ArtworkLyricColor.adaptiveText((0, 0, 0), dark: true)
+        let blackOnLight = ArtworkLyricColor.adaptiveText((1, 1, 1), dark: false)
+        precondition(whiteOnDark.0 == 1 && whiteOnDark.1 == 1 && whiteOnDark.2 == 1)
+        precondition(blackOnLight.0 == 0 && blackOnLight.1 == 0 && blackOnLight.2 == 0)
+        let lightRed = ArtworkLyricColor.adaptiveText((0.2, 0, 0), dark: true)
+        let darkYellow = ArtworkLyricColor.adaptiveText((1, 1, 0), dark: false)
+        precondition(lightRed.0 > lightRed.1 && lightRed.1 == lightRed.2)
+        precondition(darkYellow.0 == darkYellow.1 && darkYellow.1 > darkYellow.2 && darkYellow.0 < 1)
+        let vividLight = ArtworkLyricColor.adaptiveText((0.45, 0.3, 0.3), dark: false)
+        precondition(vividLight.0 > 0.45 && vividLight.1 < 0.3 && vividLight.1 == vividLight.2)
+        let samples: [(Double, Double, Double)] = [(175.0/255, 108.0/255, 0), (0, 140.0/255, 177.0/255),
+                                                  (136.0/255, 136.0/255, 4.0/255), (0, 150.0/255, 77.0/255)]
+        for sample in samples {
+            let result = ArtworkLyricColor.adaptiveText(sample, dark: false)
+            precondition(max(result.0, result.1, result.2) >= 0.8)
+            precondition(max(result.0, result.1, result.2) > max(sample.0, sample.1, sample.2))
+        }
+        let unchangedDark = ArtworkLyricColor.adaptiveText((0.9, 0.6, 0.6), dark: true)
+        precondition(unchangedDark.0 == 0.9 && unchangedDark.1 == 0.6 && unchangedDark.2 == 0.6)
+        print("PASS: lyric colors adapt to appearance while retaining hue")
+        let bounds = NSRect(x: -1440, y: 80, width: 1440, height: 790)
+        for frame in [NSRect(x: -1700, y: 200, width: 500, height: 132),
+                      NSRect(x: -100, y: 200, width: 500, height: 132),
+                      NSRect(x: 2000, y: -500, width: 2000, height: 1000)] {
+            let fixed = DesktopFloatingLyricsWindowMetrics.contained(frame, in: bounds)
+            precondition(bounds.contains(fixed))
+        }
+        print("PASS: lyric window stays within a screen when alignment or width changes")
+        precondition(DesktopFloatingLyricsWindowMetrics.availableTextWidth(windowWidth: 800, inset: 144) == 512)
+        precondition(DesktopFloatingLyricsWindowMetrics.horizontalCorrection(for: NSRect(x: -20, y: 0, width: 200, height: 20), in: NSRect(x: 0, y: 0, width: 1000, height: 800)) == 20)
+        precondition(DesktopFloatingLyricsWindowMetrics.horizontalCorrection(for: NSRect(x: 850, y: 0, width: 200, height: 20), in: NSRect(x: 0, y: 0, width: 1000, height: 800)) == -50)
+        print("PASS: text width accounts for padding and offscreen lyrics return to visible bounds")
+
         precondition(SupportedPlayers.contains("com.netease.163music"))
         precondition(SupportedPlayers.contains("com.tencent.QQMusicMac"))
         precondition(SupportedPlayers.contains("com.apple.Music"))
         precondition(!SupportedPlayers.contains(nil))
         print("PASS: supported player identifiers")
+        do {
+        let suite = "flowflow.recent-player-test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RecentPlayerStore(defaults: defaults)
+        let netease = "com.netease.163music", qq = "com.tencent.QQMusicMac", music = "com.apple.Music"
+        func sample(_ id: String, _ playing: Bool?, _ title: String? = "Song") -> RemoteSnapshot {
+            RemoteSnapshot(bundleIdentifier: id, title: title, artist: nil, album: nil, playing: playing,
+                elapsedTimeMicros: nil, durationMicros: nil, timestampEpochMicros: nil, playbackRate: nil)
+        }
+        precondition(store.lastUsed == nil)
+        precondition(store.candidates(running: [qq], available: [netease, qq, music]) == [qq, netease, music])
+        store.record(sample(netease, true))
+        store.record(sample(qq, false))
+        store.record(sample(qq, nil))
+        store.record(sample(qq, true, " "))
+        store.record(sample("unsupported", true))
+        precondition(RecentPlayerStore(defaults: defaults).lastUsed == netease)
+        store.record(sample(qq, true))
+        precondition(RecentPlayerStore(defaults: defaults).lastUsed == qq)
+        precondition(store.candidates(running: [netease], available: [netease, qq, music]) == [qq, netease, music])
+        precondition(store.candidates(running: [music], available: [netease, music]) == [music, netease])
+        precondition(store.candidates(running: [], available: []).isEmpty)
+        defaults.set("unsupported", forKey: RecentPlayerStore.key)
+        precondition(store.lastUsed == nil)
+        print("PASS: recent player persistence, actual playback and fallback ordering")
+        do {
+            let fallbackPlayer = ExternalPlayer(defaults: defaults, defaultAdvance: 0)
+            fallbackPlayer.accept(sample(netease, true))
+            fallbackPlayer.updateFallbackPlayback(playing: false)
+            let pausedPosition = fallbackPlayer.playbackPosition()
+            precondition(!fallbackPlayer.isPlaying)
+            fallbackPlayer.updateFallbackPlayback(playing: false)
+            precondition(abs(fallbackPlayer.playbackPosition() - pausedPosition) < 0.01)
+            fallbackPlayer.updateFallbackPlayback(playing: true)
+            precondition(fallbackPlayer.isPlaying && fallbackPlayer.currentSong?.name == "Song")
+            precondition(abs(fallbackPlayer.playbackPosition() - pausedPosition) < 0.1)
+        }
+        print("PASS: interruption playback pause and resume preserve the current track and position")
+
+        }
+
         let muted: [UInt8] = [160, 130, 130, 255]
         let green: [UInt8] = [20, 160, 40, 255]
         let similarGreen: [UInt8] = [30, 170, 60, 255]
@@ -183,7 +261,21 @@ import AppKit
         let enough = Array(repeating: muted, count: 95).flatMap { $0 } + Array(repeating: green, count: 3).flatMap { $0 } + Array(repeating: similarGreen, count: 2).flatMap { $0 }
         guard let grouped = ArtworkLyricColor.representativeColor(enough) else { preconditionFailure("Grouped color unavailable") }
         precondition(grouped.1 > grouped.0 * 3, "Similar colors totaling 5% must qualify")
+        let orange: [UInt8] = [255, 110, 0, 255]
+        let darkGreen: [UInt8] = [32, 110, 50, 255]
+        let dominantGreen = Array(repeating: green, count: 40).flatMap { $0 }
+            + Array(repeating: darkGreen, count: 30).flatMap { $0 }
+            + Array(repeating: orange, count: 30).flatMap { $0 }
+        guard let greenResult = ArtworkLyricColor.representativeColor(dominantGreen) else { preconditionFailure("Dominant green unavailable") }
+        precondition(greenResult.1 > greenResult.0 && greenResult.1 > greenResult.2, "Area must outweigh vivid accents")
+        let black: [UInt8] = [0, 0, 0, 255]
         let white: [UInt8] = [255, 255, 255, 255]
+        var neutralBackground = Array(repeating: black, count: 40).flatMap { $0 }
+        neutralBackground += Array(repeating: white, count: 40).flatMap { $0 }
+        neutralBackground += Array(repeating: green, count: 15).flatMap { $0 }
+        neutralBackground += Array(repeating: orange, count: 5).flatMap { $0 }
+        guard let backgroundResult = ArtworkLyricColor.representativeColor(neutralBackground) else { preconditionFailure("Artwork color unavailable") }
+        precondition(backgroundResult.1 > backgroundResult.0, "Black and white must not win over colored areas")
         let blue: [UInt8] = [0, 73, 250, 255]
         let sparse = Array(repeating: white, count: 98).flatMap { $0 } + Array(repeating: blue, count: 2).flatMap { $0 }
         guard let selected = ArtworkLyricColor.representativeColor(sparse) else { preconditionFailure("Sparse accent unavailable") }
@@ -224,7 +316,14 @@ import AppKit
         precondition(LyricCharacterTiming(start: 2, end: 2).progress(at: 1.9) == 0)
         precondition(LyricCharacterTiming(start: 2, end: 2).progress(at: 2) == 1)
         precondition(sustained.sustainedBrightness(at: 1) == 0)
-        precondition(sustained.sustainedBrightness(at: 4) > sustained.sustainedBrightness(at: 2))
+        precondition(sustained.sustainedBrightness(at: 2) == 0)
+        precondition(sustained.sustainedBrightness(at: 4) > sustained.sustainedBrightness(at: 3))
+        let ordinarySustain = LyricCharacterTiming(start: 1, end: 2)
+        precondition((0...25).allSatisfy { ordinarySustain.sustainedBrightness(at: Double($0) / 10 + 1) == 0 })
+        let borderlineSustain = LyricCharacterTiming(start: 1, end: 2.5)
+        precondition(borderlineSustain.sustainedBrightness(at: 2.4) > 0)
+        precondition(borderlineSustain.sustainedBrightness(at: 2.4) < sustained.sustainedBrightness(at: 2.4))
+        precondition(ordinarySustain.glowStrength(at: 1.5) > 0)
         precondition(sustained.sustainedBrightness(at: 5.3) > 0
         && sustained.sustainedBrightness(at: 6) == 0)
         precondition(LyricCharacterTiming(start: 2, end: 2).sustainedBrightness(at: 2) == 0)
@@ -264,6 +363,11 @@ import AppKit
         precondition(LyricCharacterTiming(start: 0, end: 100).glowStrength(at: 101.2) == 0)
         precondition(LyricCharacterTiming(start: 0, end: 100).glowStrength(at: 100) <= 1)
         precondition(LyricCharacterTiming(start: 2, end: 2).glowStrength(at: 2) == 0)
+        precondition(FloatingLyricsTone.projectionStrength(sung: 0, focus: 1) == 0)
+        precondition(FloatingLyricsTone.projectionStrength(sung: 1, focus: 0) == 0)
+        precondition(FloatingLyricsTone.projectionStrength(sung: 1, focus: 1) == 1)
+        precondition(FloatingLyricsTone.projectionStrength(sung: 0.4, focus: 1) == 0.4)
+        print("PASS: lyric projection follows sung progress and excludes the next line")
         precondition(FloatingLyricsTone.bloomGain(intensity: 3) == 0)
         precondition(FloatingLyricsTone.bloomGain(intensity: 4.5) == 0.5)
         precondition(FloatingLyricsTone.bloomGain(intensity: 6) == 1)
@@ -288,7 +392,41 @@ import AppKit
         precondition(units.map(\.text) == ["你", "好", " ", "Don't", " ", "stop-believing", "!"])
         precondition(units[3].start == 1 && units[3].end == 1.4)
         precondition(units.map(\.text).joined() == mixed.text)
+        let japaneseLine = LyricLine(time: 1, text: "ありがとう", syllables: [
+            LyricSyllable(text: "ありがとう", startTime: 1, endTime: 3.5)
+        ])
+        let japaneseUnits = LyricHighlightUnits.make(for: japaneseLine)
+        precondition(japaneseUnits.map(\.text) == ["あ", "り", "が", "と", "う"])
+        for (index, unit) in japaneseUnits.enumerated() {
+            precondition(abs(unit.start - (1 + Double(index) * 0.5)) < 0.0001)
+            precondition(abs(unit.end - (1.5 + Double(index) * 0.5)) < 0.0001)
+        }
+        let kanjiLine = LyricLine(time: 4, text: "未来", syllables: [LyricSyllable(text: "未来", startTime: 4, endTime: 6)])
+        let kanjiUnits = LyricHighlightUnits.make(for: kanjiLine, japanese: true)
+        precondition(kanjiUnits.map(\.text) == ["未", "来"] && kanjiUnits[0].end == 5 && kanjiUnits[1].start == 5)
+        let instantLine = LyricLine(time: 7, text: "きゃ", syllables: [LyricSyllable(text: "きゃ", startTime: 7, endTime: 7)])
+        precondition(LyricHighlightUnits.make(for: instantLine).allSatisfy { $0.start == 7 && $0.end == 7 })
+        precondition(LyricHighlightUnits.make(for: fallback[0], japanese: true).isEmpty)
+        print("PASS: Japanese character timing, multi-character spans and untimed fallback")
         precondition(LyricHighlightUnits.make(for: fallback[0]).isEmpty)
+        let plainEnglish = LyricLine(time: 10, text: "Hello, world!")
+        let englishEstimate = LyricHighlightUnits.make(for: plainEnglish, fallbackEnd: 14, estimate: true)
+        precondition(englishEstimate.map(\.text).joined() == plainEnglish.text)
+        let words = englishEstimate.filter { $0.end > $0.start }
+        precondition(words.map(\.text) == ["Hello", "world"])
+        precondition(words[0].start == 10 && words[0].end == 12 && words[1].start == 12 && words[1].end == 14)
+        let fastWords = LyricHighlightUnits.make(for: plainEnglish, fallbackEnd: 10.2, estimate: true).filter { $0.end > $0.start }
+        precondition(abs(fastWords[0].end - 10.1) < 0.0001 && abs(fastWords[1].end - 10.2) < 0.0001)
+        precondition(LyricHighlightUnits.make(for: plainEnglish, estimate: true).isEmpty)
+        precondition(LyricHighlightUnits.make(for: plainEnglish, fallbackEnd: 14).isEmpty)
+        let plainChinese = LyricLine(time: 2, text: "你好，世界")
+        let chineseEstimate = LyricHighlightUnits.make(for: plainChinese, fallbackEnd: 6, estimate: true)
+        precondition(chineseEstimate.filter { $0.end > $0.start }.map(\.text) == ["你", "好", "世", "界"])
+        precondition(chineseEstimate.last?.end == 6)
+        precondition(LyricHighlightUnits.make(for: plainEnglish, fallbackEnd: 10, estimate: true).isEmpty)
+        precondition(LyricHighlightUnits.make(for: plainEnglish, fallbackEnd: .infinity, estimate: true).isEmpty)
+        precondition(LyricHighlightUnits.make(for: mixed, fallbackEnd: 100, estimate: true) == units)
+        print("PASS: optional line-time estimation preserves authored timing")
         let untimed = LyricHighlightUnits.untimedMotionUnits("你好 Don't stop-believing! 🎵")
         precondition(untimed == ["你", "好", " ", "Don't", " ", "stop-believing", "!", " ", "🎵"])
         precondition(untimed.joined() == "你好 Don't stop-believing! 🎵")
@@ -331,8 +469,13 @@ import AppKit
         precondition(dimPreferences.dimCompletedLyrics)
         dimPreferences.dimCompletedLyrics = false
         precondition(!FloatingLyricsPreferences(defaults: defaults).dimCompletedLyrics)
+        precondition(!dimPreferences.estimateWordTiming)
+        dimPreferences.estimateWordTiming = true
+        precondition(FloatingLyricsPreferences(defaults: defaults).estimateWordTiming)
+
         dimPreferences.reset()
         precondition(FloatingLyricsPreferences(defaults: defaults).dimCompletedLyrics)
+        precondition(!FloatingLyricsPreferences(defaults: defaults).estimateWordTiming)
         let outside = NSRect(x: -70, y: -48, width: 420, height: 132)
         defaults.set(NSStringFromRect(outside), forKey: DesktopFloatingLyricsFramePersistence.key)
         precondition(DesktopFloatingLyricsFramePersistence.savedFrame(defaults: defaults) == outside)
@@ -579,6 +722,10 @@ import AppKit
         let original = LyricsResult(lines: lines.map { LyricLine(time: $0.time, duration: $0.duration, text: $0.text) }, pureMusic: false, songID: "ne")
         let qq = LyricsResult(lines: lines, pureMusic: false, songID: "qq", source: .qq)
         precondition(LyricsQuality.prefer(qq, over: original, duration: 120))
+        let partial = LyricsResult(lines: Array(lines.prefix(2)) + Array(original.lines.dropFirst(2)), pureMusic: false, songID: "partial", source: .qq)
+        precondition(LyricsQuality.prefer(partial, over: original, duration: 120))
+        precondition(LyricsQuality.prefer(qq, over: partial, duration: 120))
+        precondition(!LyricsQuality.prefer(original, over: qq, duration: 120))
         precondition(!LyricsQuality.prefer(qq, over: qq, duration: 120), "Ties must not switch providers")
         let wrong = lines.map { LyricLine(time: $0.time, text: "另一首歌的文字") }
         precondition(LyricsQuality.aligned(wrong, to: original.lines) == nil)

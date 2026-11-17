@@ -17,9 +17,13 @@ enum L10n {
 
 @MainActor @Observable final class LyricsState {
     var lyrics = [LyricLine]() {
-        didSet { hasTranslations = lyrics.contains(where: \.hasTranslation) }
+        didSet {
+            hasTranslations = lyrics.contains(where: \.hasTranslation)
+            hasJapaneseText = lyrics.contains { LyricHighlightUnits.containsJapaneseKana($0.text) }
+        }
     }
     private(set) var hasTranslations = false
+    private(set) var hasJapaneseText = false
     var isPureMusic = false
     var hasNoLyrics = false
     var sourceStatus = ""
@@ -78,6 +82,7 @@ struct PlaybackIndicatorFilter {
     private(set) var trackTransitionDirection = 1
     private var pendingTrackDirection = 1
     private var lastTrackCommandTime = -Double.infinity
+    private let recentPlayer = RecentPlayerStore(defaults: .standard)
     private let bridge = PlaybackBridge()
     private let service = LyricsService()
     private var lyricTask: Task<Void, Never>?
@@ -85,6 +90,10 @@ struct PlaybackIndicatorFilter {
     private var terminationObserver: NSObjectProtocol?
     private var started = false
     private var pendingEmpty: DispatchWorkItem?
+    private var fallbackTimer: Timer?
+    private var fallbackPlayerID: String?
+    private var fallbackQueryInFlight = false
+    private var fallbackGeneration = UUID()
     @ObservationIgnored private var playbackIndicator = PlaybackIndicatorFilter()
     @ObservationIgnored private var pendingIndicator: DispatchWorkItem?
     @ObservationIgnored private var recentSyncSamples = [[String: Any]]()
@@ -133,10 +142,11 @@ struct PlaybackIndicatorFilter {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    func stop() { pendingEmpty?.cancel(); pendingIndicator?.cancel(); bridge.stop(); clock?.invalidate(); clock = nil; lyricTask?.cancel() }
+    func stop() { stopFallbackMonitor(); pendingEmpty?.cancel(); pendingIndicator?.cancel(); bridge.stop(); clock?.invalidate(); clock = nil; lyricTask?.cancel() }
     func reconnect() { connected = false; clearPlayback(); status = "正在连接音乐播放器…"; bridge.start() }
 
     private func clearPlayback() {
+        stopFallbackMonitor()
         lyricTask?.cancel()
         latestRemoteSample = nil
         player.clear()
@@ -153,15 +163,69 @@ struct PlaybackIndicatorFilter {
         lyrics.heldLine = nil
     }
 
+    private func stopFallbackMonitor() {
+        fallbackGeneration = UUID()
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
+        fallbackPlayerID = nil
+        fallbackQueryInFlight = false
+    }
+
+    private func keepPlayerDuringInterruption() -> Bool {
+        if fallbackPlayerID != nil { return true }
+        guard player.isPlaying, player.currentSong != nil,
+              let id = latestRemoteSample?.bundleIdentifier, SupportedPlayers.contains(id),
+              !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty else { return false }
+        pendingEmpty?.cancel(); pendingEmpty = nil
+        fallbackPlayerID = id
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollFallbackPlayer() }
+        }
+        timer.tolerance = 0.2
+        fallbackTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        pollFallbackPlayer()
+        return true
+    }
+
+    private func pollFallbackPlayer() {
+        guard let id = fallbackPlayerID else { return }
+        guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: id).first,
+              !application.isTerminated else {
+            clearPlayback()
+            status = "请在网易云音乐、QQ 音乐或 Apple Music中播放一首歌"
+            return
+        }
+        guard !fallbackQueryInFlight else { return }
+        fallbackQueryInFlight = true
+        let pid = application.processIdentifier
+        let generation = fallbackGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let playing = PlayerFallbackState.playing(pid: pid)
+            await MainActor.run {
+                guard let self, self.fallbackGeneration == generation, self.fallbackPlayerID == id else { return }
+                self.fallbackQueryInFlight = false
+                guard let playing else { return }
+                self.player.updateFallbackPlayback(playing: playing)
+                self.updateClock()
+                self.updatePlaybackIndicator()
+                FloatingLyricsWindowController.shared.playbackChanged(playing)
+            }
+        }
+    }
+
     private func receive(_ snapshot: RemoteSnapshot?, origin: PlaybackSampleOrigin) {
         connected = true
-        pendingEmpty?.cancel(); pendingEmpty = nil
         guard let snapshot, SupportedPlayers.contains(snapshot.bundleIdentifier),
               let title = snapshot.title, !title.isEmpty else {
+            if let id = snapshot?.bundleIdentifier, !SupportedPlayers.contains(id), keepPlayerDuringInterruption() { return }
+            if fallbackPlayerID != nil { return }
             // Stream startup and media-service refreshes briefly emit an empty payload.
             // Keep the last line until the absence of media has settled.
+            guard pendingEmpty == nil else { return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
+                self.pendingEmpty = nil
                 self.clearPlayback()
                 self.status = "请在网易云音乐、QQ 音乐或 Apple Music中播放一首歌"
                 self.writeDiagnostics()
@@ -170,6 +234,9 @@ struct PlaybackIndicatorFilter {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
             return
         }
+        stopFallbackMonitor()
+        pendingEmpty?.cancel(); pendingEmpty = nil
+        recentPlayer.record(snapshot)
         let previousSong = player.currentSong
         let previous = previousSong?.id
         let oldTime = lyrics.heldLine == nil ? player.estimatedProgress() : lyrics.heldTime
@@ -197,8 +264,37 @@ struct PlaybackIndicatorFilter {
         writeDiagnostics()
     }
 
+    func openRecentPlayer() {
+        let running = Set(SupportedPlayers.orderedIdentifiers.filter {
+            !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty
+        })
+        let available = Set(SupportedPlayers.orderedIdentifiers.filter { id in
+            running.contains(id) || NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil
+        })
+        openIdlePlayerCandidates(recentPlayer.candidates(running: running, available: available))
+    }
+
+    private func openIdlePlayerCandidates(_ candidates: [String]) {
+        guard let id = candidates.first else { return }
+        let remaining = Array(candidates.dropFirst())
+        let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first
+        app?.unhide()
+        guard let url = app?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else {
+            if app?.activate(options: []) != true { openIdlePlayerCandidates(remaining) }
+            return
+        }
+        let options = NSWorkspace.OpenConfiguration()
+        options.activates = true
+        options.addsToRecentItems = false
+        NSWorkspace.shared.openApplication(at: url, configuration: options) { [weak self] _, error in
+            guard let error else { return }
+            NSLog("Flowflow could not open player: %@", error.localizedDescription)
+            Task { @MainActor in self?.openIdlePlayerCandidates(remaining) }
+        }
+    }
+
     func sendPlaybackCommand(_ command: Int) {
-        guard [2, 4, 5].contains(command), let resources = Bundle.main.resourceURL else { return }
+        guard bridge.currentOwnerIsSupported, [2, 4, 5].contains(command), let resources = Bundle.main.resourceURL else { return }
         if command == 4 || command == 5 {
             pendingTrackDirection = command == 5 ? -1 : 1
             lastTrackCommandTime = ProcessInfo.processInfo.systemUptime
@@ -235,7 +331,7 @@ struct PlaybackIndicatorFilter {
     }
 
     func seekPlayback(to seconds: Double) {
-        guard seconds.isFinite, let song = player.currentSong, song.duration.isFinite, song.duration > 0,
+        guard bridge.currentOwnerIsSupported, seconds.isFinite, let song = player.currentSong, song.duration.isFinite, song.duration > 0,
               let resources = Bundle.main.resourceURL else { return }
         let position = min(song.duration, Double(Int64.max) / 1_000_000 - 1, max(0, seconds))
         let task = Process()

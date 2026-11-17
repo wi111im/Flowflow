@@ -125,21 +125,34 @@ enum CharacterScreenTransition {
         cachedPresetInk.removeAll()
     }
 
+    func cancelScheduledPresetReposition() {
+        pendingPresetReposition?.cancel()
+        pendingPresetReposition = nil
+    }
+
     // Cache targets after the text and screen geometry settle, before selection.
     func schedulePresetReposition() {
         pendingPresetReposition?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.transitionFrame == nil else { return }
+            guard let self else { return }
             self.pendingPresetReposition = nil
+            // A transition temporarily expands the panel and moves its hosting view.
+            // Measure only after its final frame has been restored.
+            guard self.transitionFrame == nil else { return }
             self.captureReferencePositionIfNeeded()
             self.refreshPresetFrames()
             self.repositionSelectedPreset()
+            self.keepCustomPositionVisible()
         }
         pendingPresetReposition = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: work)
     }
 
     private func refreshPresetFrames() {
+        // Never apply a target calculated for an earlier line or screen when
+        // there is currently no measurable lyric content (for example, dots).
+        cachedPresetFrames.removeAll()
+        cachedPresetInk.removeAll()
         guard let panel, transitionFrame == nil, let screen = panel.screen ?? NSScreen.main,
               let localInk = DesktopFloatingLyricsInkHitView.inkBounds(in: panel.contentView, window: panel),
               let model else { return }
@@ -170,6 +183,10 @@ enum CharacterScreenTransition {
                 target.origin.x += CGFloat(UserDefaults.standard.double(forKey: presetOffsetXKey))
                 target.origin.y += CGFloat(UserDefaults.standard.double(forKey: presetOffsetYKey))
             }
+            if preset.rawValue == UserDefaults.standard.string(forKey: LyricsPositionPreset.selectionKey) {
+                let actualTargetInk = currentInk.offsetBy(dx: target.minX - frame.minX, dy: target.minY - frame.minY)
+                target.origin.x += DesktopFloatingLyricsWindowMetrics.horizontalCorrection(for: actualTargetInk, in: screen.visibleFrame)
+            }
             projected.origin.x += target.minX - frame.minX
             projected.origin.y += target.minY - frame.minY
             frames[preset] = target
@@ -177,6 +194,20 @@ enum CharacterScreenTransition {
         }
         cachedPresetFrames = frames
         cachedPresetInk = inks
+    }
+
+    private func keepCustomPositionVisible() {
+        guard UserDefaults.standard.string(forKey: LyricsPositionPreset.selectionKey) == nil,
+              !DesktopFloatingLyricsFramePersistence.isUserAdjusting,
+              let panel, let screen = panel.screen ?? NSScreen.main,
+              let localInk = DesktopFloatingLyricsInkHitView.inkBounds(in: panel.contentView, window: panel) else { return }
+        let ink = panel.convertToScreen(localInk)
+        let correction = DesktopFloatingLyricsWindowMetrics.horizontalCorrection(for: ink, in: screen.visibleFrame)
+        guard abs(correction) > 0.5 else { return }
+        var frame = panel.frame
+        frame.origin.x += correction
+        panel.setFrame(frame, display: true)
+        DesktopFloatingLyricsFramePersistence.save(frame, window: panel, clearPreset: false)
     }
 
     private func repositionSelectedPreset() {
@@ -250,6 +281,7 @@ enum CharacterScreenTransition {
                 self.pendingWidth = nil
                 self.ensureLyricsWidth(width, alignment: alignment)
             }
+            self.schedulePresetReposition()
         }
     }
 
@@ -258,12 +290,18 @@ enum CharacterScreenTransition {
     func ensureLyricsWidth(_ width: CGFloat, alignment: FloatingLyricsTextAlignment) {
         guard width.isFinite, width > 0, let panel else { return }
         if transitionFrame != nil { pendingWidth = (width, alignment); return }
+        let limit = min((panel.screen ?? NSScreen.main)?.visibleFrame.width ?? 800, 800)
+        let width = min(width, limit)
         guard width > panel.frame.width + 1 else { return }
         var frame = panel.frame
         let extra = ceil(width) - frame.width
         if alignment == .trailing { frame.origin.x -= extra }
         else if alignment == .center { frame.origin.x -= extra / 2 }
         frame.size.width += extra
+        if UserDefaults.standard.string(forKey: LyricsPositionPreset.selectionKey) == nil,
+           let screen = panel.screen ?? NSScreen.main {
+            frame = DesktopFloatingLyricsWindowMetrics.contained(frame, in: screen.visibleFrame)
+        }
         panel.setFrame(frame, display: true)
         updateTravelDistance(for: panel)
     }
@@ -279,8 +317,15 @@ enum CharacterScreenTransition {
         if isVisible && !autoHidden && panel?.isVisible == true { return }
         if panel == nil {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let initial = DesktopFloatingLyricsFramePersistence.savedFrame()
+        var initial = DesktopFloatingLyricsFramePersistence.savedFrame()
             ?? NSRect(x: screen.midX - 210, y: screen.midY - 66, width: 420, height: 132)
+        if !NSScreen.screens.contains(where: { $0.frame.intersects(initial) }) {
+            initial = DesktopFloatingLyricsWindowMetrics.contained(initial, in: screen)
+        }
+        if initial.width > min(screen.width, 800) {
+            initial.origin.x = initial.midX - min(screen.width, 800) / 2
+            initial.size.width = min(screen.width, 800)
+        }
         // Reserve the same drawing area before, during and after movement.
         screenMotion.offset = CGSize(width: 0, height: CharacterScreenTransition.displacement(
             for: initial, screens: NSScreen.screens.map(\.frame)))
@@ -437,6 +482,7 @@ enum CharacterScreenTransition {
             }
             CATransaction.commit()
             completion()
+            if entering { self.schedulePresetReposition() }
             if entering, let pending = self.pendingPreset {
                 self.pendingPreset = nil
                 self.refreshPresetFrames()

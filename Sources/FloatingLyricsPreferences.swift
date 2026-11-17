@@ -30,6 +30,7 @@ final class FloatingLyricsPreferences {
         static let showsTranslation = "floatingLyrics.showsTranslation"
         static let showsNextLine = "floatingLyrics.showsNextLine"
         static let dimCompletedLyrics = "floatingLyrics.dimCompletedLyrics"
+        static let estimateWordTiming = "floatingLyrics.estimateWordTiming"
         static let fontFamily = "floatingLyrics.fontFamily"
         static let fontScale = "floatingLyrics.fontScale"
         static let textAlignment = "floatingLyrics.textAlignment"
@@ -55,6 +56,10 @@ final class FloatingLyricsPreferences {
         didSet {
             defaults.set(showsNextLine, forKey: Key.showsNextLine)
         }
+    }
+
+    var estimateWordTiming: Bool {
+        didSet { defaults.set(estimateWordTiming, forKey: Key.estimateWordTiming) }
     }
 
     var dimCompletedLyrics: Bool {
@@ -145,6 +150,7 @@ final class FloatingLyricsPreferences {
             forKey: Key.showsNextLine
         ) as? Bool ?? true
 
+        estimateWordTiming = defaults.object(forKey: Key.estimateWordTiming) as? Bool ?? false
         dimCompletedLyrics = defaults.object(forKey: Key.dimCompletedLyrics) as? Bool ?? true
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
 
@@ -208,6 +214,7 @@ final class FloatingLyricsPreferences {
         showsTranslation = false
         showsNextLine = true
         dimCompletedLyrics = true
+        estimateWordTiming = false
         fontFamily = ""
         fontScale = Self.defaultFontScale
         textAlignment = Self.defaultTextAlignment

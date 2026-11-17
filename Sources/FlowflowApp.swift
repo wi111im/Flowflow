@@ -220,6 +220,7 @@ private struct TrayPlaybackButton: View {
 private struct TrayProgressBar: View {
     @Bindable var model: DesktopAppModel
     let color: Color
+    let highlightColor: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("animation.targetFPS") private var targetFPS = AnimationFrameRate.defaultValue
     @State private var hovered = false
@@ -251,7 +252,7 @@ private struct TrayProgressBar: View {
                         TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS), paused: !model.player.isPlaying || reduceMotion)) { context in
                             let pulse = model.player.isPlaying && !reduceMotion
                                 ? 0.90 + 0.10 * (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / 3.2) + 1) / 2 : 0.95
-                            LinearGradient(colors: [.clear, color.opacity(0.45 * pulse), .white.opacity(0.60 * pulse)],
+                            LinearGradient(colors: [.clear, highlightColor.opacity(0.45 * pulse), .white.opacity(0.60 * pulse)],
                                            startPoint: .leading, endPoint: .trailing)
                         }
                         .frame(width: min(30, width * fraction))
@@ -261,7 +262,7 @@ private struct TrayProgressBar: View {
                     .clipShape(Capsule())
                     .shadow(color: color.opacity(0.65), radius: hovered ? 7 : 4)
                 Capsule().fill(RadialGradient(
-                    colors: [.white.opacity(0.55), color.opacity(0.55), .clear],
+                    colors: [.white.opacity(0.55), highlightColor.opacity(0.55), .clear],
                     center: UnitPoint(x: width > 0 ? min(1, max(0, hoverX / width)) : 0, y: 0.5),
                     startRadius: 0, endRadius: 14))
                     .mask(alignment: .leading) {
@@ -422,6 +423,7 @@ private struct NetEaseFavoriteButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("animation.targetFPS") private var targetFPS = AnimationFrameRate.defaultValue
     @State private var favorite: Bool?
+    @State private var displayedFavorite = false
     @State private var busy = false
     @State private var message: String?
 
@@ -446,7 +448,7 @@ private struct NetEaseFavoriteButton: View {
             }
         } label: {
             ZStack {
-                if favorite == true {
+                if displayedFavorite {
                     TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS), paused: reduceMotion)) { context in
                         let angle = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate * 45
                         Circle().fill(AngularGradient(colors: [glowColor.opacity(0.05), glowColor.opacity(0.8), glowColor.opacity(0.55), glowColor.opacity(0.1)], center: .center, angle: .degrees(angle)))
@@ -454,24 +456,34 @@ private struct NetEaseFavoriteButton: View {
                     }
                     .transition(.opacity)
                 }
-                Image(systemName: favorite == true ? "star.fill" : "star")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(favorite == true ? color : Color.white)
+                Image(systemName: "star")
+                    .foregroundStyle(color)
+                    .opacity(displayedFavorite ? 0 : 1)
+                Image(systemName: "star.fill")
+                    .foregroundStyle(color)
+                    .opacity(displayedFavorite ? 1 : 0)
             }
+            .font(.system(size: 18, weight: .medium))
+            .id(songID)
+            .transition(.opacity)
             .frame(width: 32, height: 32)
             .contentShape(Rectangle())
         }
         .buttonStyle(ArtworkPressStyle())
         .disabled(!supported || songID == nil || busy || (AXIsProcessTrusted() && favorite == nil))
         .opacity(supported ? 1 : 0.4)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: favorite)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: displayedFavorite)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: songID)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.55), value: color)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.55), value: glowColor)
         .help(message ?? (favorite == true ? "取消喜欢" : "喜欢这首歌"))
         .accessibilityLabel(favorite == true ? "取消喜欢这首歌" : "喜欢这首歌")
+        .onChange(of: favorite) { _, value in
+            if let value { displayedFavorite = value }
+        }
         .task(id: "\(supported)|\(songID ?? "")") {
             favorite = nil
-            guard supported, songID != nil else { return }
+            guard supported, songID != nil else { displayedFavorite = false; return }
             while !Task.isCancelled {
                 if !busy {
                     let value = await Task.detached { NetEaseFavorite.read() }.value
@@ -488,6 +500,7 @@ private struct TrayMenu: View {
     @Bindable var model: DesktopAppModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("floatingLyrics.fixedPosition") private var fixedPosition = false
     @AppStorage("floatingLyrics.hoverControls") private var hoverControls = true
     @AppStorage("floatingLyrics.artworkColorEnabled") private var artworkColorEnabled = true
@@ -522,6 +535,10 @@ private struct TrayMenu: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
                 Button {
+                    if model.player.currentSong == nil {
+                        model.openRecentPlayer()
+                        return
+                    }
                     guard let id = model.playingApplicationBundleIdentifier,
                           SupportedPlayers.contains(id) else { return }
                     let player = NSRunningApplication.runningApplications(withBundleIdentifier: id).first
@@ -590,19 +607,21 @@ private struct TrayMenu: View {
                     case .ended: artworkHover = nil
                     }
                 }
-                .disabled(model.player.currentSong == nil || model.playingApplicationBundleIdentifier == nil)
-                .help("打开正在播放的音乐软件")
-                .accessibilityLabel("打开正在播放的音乐软件")
+                .disabled(model.player.currentSong != nil && model.playingApplicationBundleIdentifier == nil)
+                .help(model.player.currentSong == nil ? "打开最近使用的音乐软件" : "打开正在播放的音乐软件")
+                .accessibilityLabel(model.player.currentSong == nil ? "打开最近使用的音乐软件" : "打开正在播放的音乐软件")
                 VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .top, spacing: 4) {
                     SongInfoTransition(song: SongInfoSnapshot(model.player.currentSong),
                                        direction: model.trackTransitionDirection, reduceMotion: reduceMotion)
                     NetEaseFavoriteButton(songID: model.player.currentSong?.id,
                                           supported: model.playingApplicationBundleIdentifier == NetEaseFavorite.bundleID,
-                                          color: artwork.flatMap { ArtworkLyricColor.dominantColor($0) }.map { Color(red: $0.0, green: $0.1, blue: $0.2) } ?? .white,
+                                          color: ArtworkLyricColor.adaptiveTextColor(lyricColor, dark: colorScheme == .dark),
                                           glowColor: saturatedGlow(lyricColor))
                 }
-                TrayProgressBar(model: model, color: lyricColor)
+                TrayProgressBar(model: model,
+                    color: ArtworkLyricColor.adaptiveTextColor(lyricColor, dark: colorScheme == .dark),
+                    highlightColor: lyricColor)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -780,6 +799,10 @@ private struct PreferencesView: View {
                         positionNudge("arrow.right", label: "向右移动", dx: 1, dy: 0)
                     }
                 }.help("每次移动 1 点；预设位置下的微调会随歌词变化保留。")
+            }
+            Section("歌词同步") {
+                Toggle("对于没有逐词/字歌词平均歌词时间显示逐词/字高亮", isOn: $prefs.estimateWordTiming)
+                    .help("找不到逐词或逐字时间时，将每句的时间平均分配；已有逐词或逐字时间时优先使用原时间。")
             }
             Section("歌词外观") {
                 Toggle("跟随歌曲封面颜色", isOn: artworkColorBinding)

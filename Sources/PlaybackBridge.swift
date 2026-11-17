@@ -196,6 +196,14 @@ struct SongOffsetStore {
         anchor + (isPlaying ? (ProcessInfo.processInfo.systemUptime - sampledAt) * rate : 0)
     }
 
+    func updateFallbackPlayback(playing: Bool) {
+        guard isPlaying != playing else { return }
+        anchor = rawProgress()
+        sampledAt = ProcessInfo.processInfo.systemUptime
+        isPlaying = playing
+        tick()
+    }
+
     func suspend() {
         anchor = rawProgress()
         sampledAt = ProcessInfo.processInfo.systemUptime
@@ -233,6 +241,7 @@ struct SongOffsetStore {
     private var lastProbeAt = -Double.infinity
     private var observedPlaying = false
     private var observedTitle: String?
+    private(set) var currentOwnerIsSupported = false
     private var confirmations = [DispatchWorkItem]()
     var onSnapshot: ((RemoteSnapshot?, PlaybackSampleOrigin) -> Void)?
     var onError: ((String) -> Void)?
@@ -300,12 +309,13 @@ struct SongOffsetStore {
                 guard let self, self.wanted, self.generation == token else { return }
                 if Date().timeIntervalSince(self.streamBegan) > 10 { self.failures = 0 }
                 self.streamRevision += 1
-                let changed = snapshot?.playing != nil && snapshot?.playing != self.observedPlaying
-                    || snapshot?.title != nil && snapshot?.title != self.observedTitle
-                if let playing = snapshot?.playing { self.observedPlaying = playing }
-                if let title = snapshot?.title { self.observedTitle = title }
-                self.onSnapshot?(snapshot, .stream)
-                if changed { self.confirmTimeline() }
+                // Stream fields can temporarily combine a new app's metadata
+                // with the previous app's identifier. Treat the stream only as
+                // a change signal; the probe validates ownership around its read.
+                if !SupportedPlayers.contains(snapshot?.bundleIdentifier) {
+                    self.currentOwnerIsSupported = false
+                }
+                self.confirmTimeline()
             }
         }
         pipe.fileHandleForReading.readabilityHandler = { handle in
@@ -375,11 +385,20 @@ struct SongOffsetStore {
             Task { @MainActor in
                 guard let self, self.wanted, self.probe === task else { return }
                 self.probe = nil
-                guard self.generation == token, self.streamRevision == revision, task.terminationStatus == 0 else { return }
+                guard self.generation == token, task.terminationStatus == 0 else { return }
+                guard self.streamRevision == revision else {
+                    self.confirmTimeline()
+                    return
+                }
                 if let snapshot = try? JSONDecoder().decode(RemoteSnapshot.self, from: bytes) {
-                    if let playing = snapshot.playing { self.observedPlaying = playing }
+                    self.currentOwnerIsSupported = SupportedPlayers.contains(snapshot.bundleIdentifier)
+                    if self.currentOwnerIsSupported {
+                        if let playing = snapshot.playing { self.observedPlaying = playing }
+                        self.observedTitle = snapshot.title
+                    } else { self.observedPlaying = false; self.observedTitle = nil }
                     self.onSnapshot?(snapshot, .probe)
                 } else if String(data: bytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "null" {
+                    self.currentOwnerIsSupported = false
                     self.onSnapshot?(nil, .probe)
                 }
             }
@@ -400,7 +419,7 @@ struct SongOffsetStore {
         retry?.cancel(); retry = nil
         confirmations.forEach { $0.cancel() }; confirmations.removeAll()
         lastProbeAt = -Double.infinity
-        observedPlaying = false; observedTitle = nil
+        observedPlaying = false; observedTitle = nil; currentOwnerIsSupported = false
         healthTimer?.invalidate(); healthTimer = nil
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observers.removeAll()

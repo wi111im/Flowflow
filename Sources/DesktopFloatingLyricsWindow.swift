@@ -8,6 +8,7 @@ func playbackControlSymbolWeight(_ symbol: String) -> Font.Weight {
 struct DesktopFloatingLyricsWindow: View {
     @Environment(DesktopAppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("floatingLyrics.hoverControls") private var hoverControls = true
     @State private var hovering = false
     @AppStorage("floatingLyrics.readabilityStrength") private var readabilityStrength = 0.5
@@ -131,12 +132,27 @@ struct DesktopFloatingLyricsWindow: View {
         }
     }
 
-    private var primaryTextColor: Color {
+    private var sourceTextColor: Color {
         if SongColorOverride.isGoldenHour(model.player.currentSong) {
             return Color(red: 1, green: 161.0 / 255.0, blue: 60.0 / 255.0)
         }
         if artworkColorEnabled { return model.artworkColor ?? (preferences.backgroundStyle.usesLightForeground ? .white : .primary) }
         return customColorEnabled ? Color(red: colorRed, green: colorGreen, blue: colorBlue) : (preferences.backgroundStyle.usesLightForeground ? .white : .primary)
+    }
+
+    private var sourceRGB: (Double, Double, Double) {
+        let appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)!
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance { resolved = NSColor(sourceTextColor).usingColorSpace(.sRGB) }
+        guard let resolved else { return colorScheme == .dark ? (1, 1, 1) : (0, 0, 0) }
+        return (resolved.redComponent, resolved.greenComponent, resolved.blueComponent)
+    }
+    private var primaryTextColor: Color {
+        ArtworkLyricColor.adaptiveTextColor(sourceTextColor, dark: colorScheme == .dark)
+    }
+    private var lyricGlowColor: Color {
+        let rgb = ArtworkLyricColor.makeVisible(sourceRGB)
+        return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
     }
 
     private var textShadowColor: Color {
@@ -146,7 +162,7 @@ struct DesktopFloatingLyricsWindow: View {
         case .shadow:
             .black.opacity(0.62)
         case .glow:
-            primaryTextColor.opacity(min(1, 0.48 * preferences.glowIntensity))
+            lyricGlowColor.opacity(min(1, 0.48 * preferences.glowIntensity))
         }
     }
 
@@ -161,7 +177,7 @@ struct DesktopFloatingLyricsWindow: View {
     // A tighter inner halo keeps brighter glow visible without blurring the glyphs.
     private var glowCoreColor: Color {
         preferences.textEffect == .glow
-            ? primaryTextColor.opacity(min(1, 0.30 * preferences.glowIntensity))
+            ? lyricGlowColor.opacity(min(1, 0.30 * preferences.glowIntensity))
             : .clear
     }
 
@@ -237,7 +253,7 @@ struct DesktopFloatingLyricsWindow: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: hoverControls && hovering)
         .frame(minWidth: 300, minHeight: 112)
         .contentShape(.rect)
-        .task(id: "\(currentLine?.text ?? "")|\(currentLine?.translation ?? "")|\(preferences.fontFamily)|\(fontScale)|\(preferences.textAlignment.rawValue)|\(preferences.showsTranslation)|\(preferences.showsNextLine)|\(model.player.currentSong?.id ?? "")|\(showsSongInformation)") {
+        .task(id: "\(currentLine?.text ?? "")|\(currentLine?.translation ?? "")|\(preferences.fontFamily)|\(fontScale)|\(preferences.showsTranslation)|\(preferences.showsNextLine)|\(model.player.currentSong?.id ?? "")|\(showsSongInformation)|\(showsInstrumentalDots)") {
             let font = NSFont(name: preferences.fontFamily, size: 26 * fontScale)
                 ?? NSFont.systemFont(ofSize: 26 * fontScale, weight: .bold)
             var strings = visibleLyricRows.map { $0.line.text }
@@ -247,7 +263,11 @@ struct DesktopFloatingLyricsWindow: View {
             // Reserve space for the glow and font-metric differences across scripts.
             let margin = max(64, CGFloat(FloatingLyricsPreferences.glowRadiusRange.upperBound) * max(1, fontScale) * 5 + 16)
             FloatingLyricsWindowController.shared.ensureLyricsWidth(widest * 1.15 + margin, alignment: preferences.textAlignment)
-            FloatingLyricsWindowController.shared.schedulePresetReposition()
+            if showsInstrumentalDots && !showsSongInformation {
+                FloatingLyricsWindowController.shared.cancelScheduledPresetReposition()
+            } else {
+                FloatingLyricsWindowController.shared.schedulePresetReposition()
+            }
         }
         .task(id: "\(artworkColorEnabled)|\(model.player.currentSong?.id ?? "")") {
             // Keep the last successful color while the next cover loads.
@@ -288,7 +308,7 @@ struct DesktopFloatingLyricsWindow: View {
     }
 
     private func hoverActionButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        HoverPlaybackButton(symbol: symbol, label: label, color: primaryTextColor,
+        HoverPlaybackButton(symbol: symbol, label: label, color: primaryTextColor, glowColor: lyricGlowColor,
             opacity: preferences.textOpacity, controlsVisible: hovering, glowIntensity: preferences.textEffect == .glow ? preferences.glowIntensity : 0,
             glowRadius: CGFloat(preferences.glowRadius) * fontScale, fontScale: fontScale,
             projectionColor: projectionColor, projectionOpacity: projectionOpacity,
@@ -298,6 +318,15 @@ struct DesktopFloatingLyricsWindow: View {
 
     private var lyricsContent: some View {
         GeometryReader { geometry in
+        let font = NSFont(name: preferences.fontFamily, size: 26 * fontScale)
+            ?? NSFont.systemFont(ofSize: 26 * fontScale, weight: .bold)
+        let strings = visibleLyricRows.map { $0.line.text }
+            + (preferences.showsTranslation ? [currentLine?.translation].compactMap { $0 } : [])
+            + (showsSongInformation ? [model.player.currentSong?.name, model.player.currentSong?.artist].compactMap { $0 } : [])
+        let textWidth = (strings.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) * 1.15
+        let horizontalInset = menuPreview ? CGFloat(8) : glowSafeInset(length: geometry.size.width, minimum: 14, fraction: 0.18)
+        let contentWidth = showsInstrumentalDots && !showsSongInformation
+            ? max(WaitingDotsLayout.width(diameter: max(12, 18 * fontScale)), textWidth) : max(1, textWidth)
         ZStack {
             // Empty, loading, unavailable and instrumental states share the dots.
             // Connection/error details remain in settings and the menu, never the overlay.
@@ -308,8 +337,6 @@ struct DesktopFloatingLyricsWindow: View {
                     if !menuPreview {
                         lyricRow(line: line, isFocused: true, forceTranslation: true, backgroundOnly: true)
                             .accessibilityHidden(true).allowsHitTesting(false)
-                        lyricRow(line: line, isFocused: true, forceTranslation: true, projectionOnly: true)
-                            .accessibilityHidden(true).allowsHitTesting(false)
                     }
                     if !menuPreview && preferences.textEffect == .glow && preferences.glowIntensity > 0 {
                         lyricRow(line: line, isFocused: true, forceTranslation: true, glowOnly: true)
@@ -319,24 +346,10 @@ struct DesktopFloatingLyricsWindow: View {
                 }
                     .transition(lyricsSwapTransition)
             } else if showsInstrumentalDots {
-                FloatingLyricsWaitingDots(
-                    diameter: max(12, 18 * fontScale),
-                    color: primaryTextColor.opacity(preferences.textOpacity),
-                    outline: blackOutline,
-                    outlineOpacity: readabilityOutline,
-                    readabilityShadow: readabilityShadow,
-                    animates: floatMotion && !reduceMotion,
-                    screenProgress: screenMotion?.progress ?? 1,
-                    screenDistance: screenMotion?.offset.height ?? 0,
-                    entering: screenMotion?.entering ?? true,
-                    rightFirst: screenMotion?.rightFirst ?? false,
-                    centerFirst: screenMotion?.centerFirst ?? false
-                )
-                .shadow(color: projectionColor.opacity(menuPreview ? 0 : projectionOpacity), radius: 2.5 * fontScale, y: 1.5 * fontScale)
-                .shadow(color: textShadowColor, radius: preferences.textEffect == .glow ? CGFloat(preferences.glowRadius) * fontScale : textShadowRadius, y: textShadowOffset)
-                .shadow(color: glowCoreColor, radius: CGFloat(preferences.glowRadius) * fontScale * 0.28)
-                .background { if !menuPreview { softDarkBackdrop } }
-                .frame(maxWidth: .infinity, alignment: frameAlignment)
+                lyricRows(backgroundOnly: false, waitingDots: true)
+                    .opacity(0)
+                    .overlay(alignment: frameAlignment) { waitingDotsView.fixedSize() }
+                    .frame(maxWidth: .infinity, alignment: frameAlignment)
                 .transition(lyricsSwapTransition)
             } else {
                 ZStack {
@@ -358,10 +371,11 @@ struct DesktopFloatingLyricsWindow: View {
         }
         // Reserve space inside the actual window surface for the glow. The
         // limits preserve usable room for lyrics in a small window.
-        .padding(.horizontal, menuPreview ? 8 : glowSafeInset(length: geometry.size.width, minimum: 14, fraction: 0.18))
+        .frame(width: min(contentWidth, DesktopFloatingLyricsWindowMetrics.availableTextWidth(windowWidth: geometry.size.width, inset: horizontalInset)))
+        .padding(.horizontal, horizontalInset)
         .padding(.top, menuPreview ? 8 : glowSafeInset(length: geometry.size.height, minimum: 32, fraction: 0.22))
         .padding(.bottom, menuPreview ? 8 : glowSafeInset(length: geometry.size.height, minimum: 18, fraction: 0.22))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: frameAlignment)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: primaryTextColor)
         .animation(reduceMotion ? nil : (preferences.showsNextLine ? .timingCurve(0.65, 0, 0.34, 1.22, duration: 0.48) : .easeOut(duration: 0.20)), value: currentLine?.id)
@@ -369,14 +383,19 @@ struct DesktopFloatingLyricsWindow: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.34), value: showsSongInformation)
     }
 
-    private func lyricRows(backgroundOnly: Bool, glowOnly: Bool = false, projectionOnly: Bool = false) -> some View {
-        StableLyricRowsLayout(activeIDs: visibleLyricRows.map(\.id), spacing: CGFloat(preferences.lineSpacing)) {
-            ForEach(visibleLyricRows) { row in
-                lyricRow(line: row.line, isFocused: row.isFocused, backgroundOnly: backgroundOnly, glowOnly: glowOnly, projectionOnly: projectionOnly)
+    private func lyricRows(backgroundOnly: Bool, glowOnly: Bool = false, projectionOnly: Bool = false,
+                           waitingDots: Bool = false) -> some View {
+        let rows = waitingDots && visibleLyricRows.isEmpty
+            ? [FloatingLyricRow(line: LyricLine(time: 0, text: "字", translation: nil), isFocused: true)]
+            : visibleLyricRows
+        return StableLyricRowsLayout(activeIDs: rows.map(\.id), spacing: CGFloat(preferences.lineSpacing)) {
+            ForEach(rows) { row in
+                lyricRow(line: row.line, isFocused: row.isFocused, backgroundOnly: backgroundOnly, glowOnly: glowOnly, projectionOnly: projectionOnly, waitingDots: waitingDots)
+                    .opacity(waitingDots && !row.isFocused ? 0 : 1)
                     .layoutValue(key: LyricRowIDKey.self, value: row.id)
                     .layoutValue(key: LyricRowFocusKey.self, value: row.isFocused)
-                    .transition(!preferences.showsNextLine && !reduceMotion && !sharedIndices(for: row.line).isEmpty
-                                ? .asymmetric(insertion: .identity, removal: .opacity) : lyricRowTransition)
+                    .transition(waitingDots ? .identity : (!preferences.showsNextLine && !reduceMotion && !sharedIndices(for: row.line).isEmpty
+                                ? .asymmetric(insertion: .identity, removal: .opacity) : lyricRowTransition))
                     .zIndex(row.isFocused ? 1 : 0)
             }
         }
@@ -393,11 +412,7 @@ struct DesktopFloatingLyricsWindow: View {
 
     private var lyricsSwapTransition: AnyTransition {
         guard !reduceMotion else { return .identity }
-        guard preferences.showsNextLine else { return .opacity }
-        return .asymmetric(
-            insertion: .offset(y: 8).combined(with: .opacity),
-            removal: .offset(y: -8).combined(with: .opacity)
-        )
+        return .opacity
     }
 
     private var visibleLyricRows: [FloatingLyricRow] {
@@ -459,17 +474,18 @@ struct DesktopFloatingLyricsWindow: View {
             .accessibilityHidden(true)
     }
 
-    private func lyricRow(line: LyricLine, isFocused: Bool, forceTranslation: Bool = false, backgroundOnly: Bool = false, glowOnly: Bool = false, projectionOnly: Bool = false) -> some View {
+    private func lyricRow(line: LyricLine, isFocused: Bool, forceTranslation: Bool = false, backgroundOnly: Bool = false, glowOnly: Bool = false, projectionOnly: Bool = false, waitingDots: Bool = false) -> some View {
         // Build attributed text once per row update, outside the display clock.
         let preparedText = timedText(for: line, preserveShared: isFocused && !preferences.showsNextLine && !reduceMotion)
         let animates = (floatClockRunning && characterFloat && !reduceMotion)
-            || (model.player.isPlaying && isFocused && !line.syllables.isEmpty)
+            || (model.player.isPlaying && isFocused && !highlightUnits(for: line).isEmpty)
         let scale: CGFloat = isFocused ? 1 : 17.0 / 26.0
         let anchor = UnitPoint(x: textAlignment == .leading ? 0 : textAlignment == .trailing ? 1 : 0.5, y: 0)
         return VStack(alignment: .leading, spacing: preferences.lineSpacing) {
             if preferences.showsNextLine && !forceTranslation {
                 translationRow(line: line, isFocused: isFocused, forceTranslation: forceTranslation, animates: animates,
                                backgroundOnly: backgroundOnly, glowOnly: glowOnly, projectionOnly: projectionOnly)
+                    .opacity(waitingDots || projectionOnly ? 0 : 1)
             }
             ScaledLyricLayout(scale: scale) {
             TimelineView(.animation(minimumInterval: AnimationFrameRate.interval(targetFPS),
@@ -489,7 +505,7 @@ struct DesktopFloatingLyricsWindow: View {
                         entering: screenMotion?.entering ?? true,
                         rightFirst: screenMotion?.rightFirst ?? false,
                     centerFirst: screenMotion?.centerFirst ?? false,
-                        glowColor: primaryTextColor,
+                        glowColor: lyricGlowColor,
                         glowRadius: CGFloat(preferences.glowRadius) * fontScale,
                         glowIntensity: preferences.textEffect == .glow ? preferences.glowIntensity : 0,
                         dimCompletedLyrics: preferences.dimCompletedLyrics,
@@ -505,14 +521,17 @@ struct DesktopFloatingLyricsWindow: View {
                     .animation(reduceMotion || screenMotion?.active == true ? nil : .easeInOut(duration: 0.7), value: floatMotion)
                     .animation(reduceMotion || screenMotion?.active == true ? nil : .easeInOut(duration: 0.7), value: characterFloat)
                     .lineLimit(menuPreview ? nil : 1)
-                    .fixedSize(horizontal: !menuPreview, vertical: menuPreview)
+                    // Keep long lines within the available row instead of letting
+                    // their intrinsic width escape the selected alignment edge.
+                    .minimumScaleFactor(menuPreview ? 1 : 0.000001)
+                    .fixedSize(horizontal: false, vertical: menuPreview)
                     .multilineTextAlignment(textAlignment)
                     .shadow(color: !glowOnly && !projectionOnly && preferences.textEffect == .shadow ? textShadowColor : .clear,
                             radius: textShadowRadius, y: textShadowOffset)
-                    .opacity(backgroundOnly ? 0 : 1)
+                    .opacity(backgroundOnly || waitingDots ? 0 : 1)
                     .background { if backgroundOnly { softDarkBackdrop } }
                     .background {
-                        if !backgroundOnly && !glowOnly && !projectionOnly {
+                        if !backgroundOnly && !glowOnly && !projectionOnly && !waitingDots {
                             lyricsInkRegion(line.text, size: (isFocused ? 26 : 17) * fontScale,
                                             weight: preferences.fontWeight.swiftUIWeight, lines: 2)
                         }
@@ -524,9 +543,22 @@ struct DesktopFloatingLyricsWindow: View {
             if !(preferences.showsNextLine && !forceTranslation) {
                 translationRow(line: line, isFocused: isFocused, forceTranslation: forceTranslation, animates: animates,
                                backgroundOnly: backgroundOnly, glowOnly: glowOnly, projectionOnly: projectionOnly)
+                    .opacity(waitingDots || projectionOnly ? 0 : 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: frameAlignment)
+    }
+
+    private var waitingDotsView: some View {
+        FloatingLyricsWaitingDots(
+            diameter: max(12, 18 * fontScale), color: primaryTextColor.opacity(preferences.textOpacity),
+            outline: blackOutline, outlineOpacity: readabilityOutline, readabilityShadow: readabilityShadow,
+            animates: floatMotion && !reduceMotion, screenProgress: screenMotion?.progress ?? 1,
+            screenDistance: screenMotion?.offset.height ?? 0, entering: screenMotion?.entering ?? true,
+            rightFirst: screenMotion?.rightFirst ?? false, centerFirst: screenMotion?.centerFirst ?? false)
+        .shadow(color: textShadowColor, radius: preferences.textEffect == .glow ? CGFloat(preferences.glowRadius) * fontScale : textShadowRadius, y: textShadowOffset)
+        .shadow(color: glowCoreColor, radius: CGFloat(preferences.glowRadius) * fontScale * 0.28)
+        .background { if !menuPreview { softDarkBackdrop } }
     }
 
     @ViewBuilder
@@ -546,7 +578,7 @@ struct DesktopFloatingLyricsWindow: View {
                         entering: screenMotion?.entering ?? true,
                         rightFirst: screenMotion?.rightFirst ?? false,
                         centerFirst: screenMotion?.centerFirst ?? false,
-                        glowColor: primaryTextColor, glowRadius: CGFloat(preferences.glowRadius) * fontScale,
+                        glowColor: lyricGlowColor, glowRadius: CGFloat(preferences.glowRadius) * fontScale,
                         glowIntensity: preferences.textEffect == .glow ? preferences.glowIntensity : 0,
                         dimCompletedLyrics: false, outlineWidth: blackOutline ? max(0.5, 0.5 * fontScale) : 0,
                         outlineOpacity: readabilityOutline, readabilityShadow: readabilityShadow,
@@ -555,7 +587,10 @@ struct DesktopFloatingLyricsWindow: View {
                         glowOnly: glowOnly, drawsGlow: glowOnly || menuPreview,
                         drawingPadding: 0))
                     .lineLimit(menuPreview ? nil : 1)
-                    .fixedSize(horizontal: !menuPreview, vertical: menuPreview)
+                    // Keep long lines within the available row instead of letting
+                    // their intrinsic width escape the selected alignment edge.
+                    .minimumScaleFactor(menuPreview ? 1 : 0.000001)
+                    .fixedSize(horizontal: false, vertical: menuPreview)
                     .multilineTextAlignment(textAlignment)
                     .shadow(color: !glowOnly && !projectionOnly && preferences.textEffect == .shadow ? textShadowColor : .clear,
                             radius: textShadowRadius, y: textShadowOffset)
@@ -591,9 +626,21 @@ struct DesktopFloatingLyricsWindow: View {
         }
     }
 
+    private func highlightUnits(for line: LyricLine) -> [LyricHighlightUnit] {
+        let lines = model.lyrics.lyrics
+        guard let index = lines.firstIndex(where: { $0.id == line.id }) else {
+            return line.syllables.isEmpty ? [] : LyricHighlightUnits.make(for: line, japanese: model.lyrics.hasJapaneseText)
+        }
+        let durationEnd = line.duration.flatMap { $0.isFinite && $0 > 0 ? line.time + $0 : nil }
+        let nextEnd = lines.dropFirst(index + 1).first(where: { $0.time > line.time })?.time
+        let songEnd = model.player.currentSong.flatMap { $0.duration.isFinite && $0.duration > line.time ? $0.duration : nil }
+        let fallbackEnd = [durationEnd, nextEnd, songEnd].compactMap { $0 }.min()
+        return LyricHighlightUnits.make(for: line, japanese: model.lyrics.hasJapaneseText, fallbackEnd: fallbackEnd, estimate: preferences.estimateWordTiming)
+    }
+
     private func timedText(for line: LyricLine?, preserveShared: Bool = false) -> Text {
         guard let line else { return Text("") }
-        let units = LyricHighlightUnits.make(for: line)
+        let units = highlightUnits(for: line)
         let parts = units.isEmpty ? LyricHighlightUnits.untimedMotionUnits(line.text) : units.map(\.text)
         let retained = preserveShared ? sharedIndices(for: line) : []
         guard !units.isEmpty else {
@@ -616,7 +663,7 @@ struct DesktopFloatingLyricsWindow: View {
     private func sharedIndices(for line: LyricLine) -> Set<Int> {
         guard let index = model.lyrics.lyrics.firstIndex(where: { $0.id == line.id }), index > 0 else { return [] }
         func parts(_ line: LyricLine) -> [String] {
-            let units = LyricHighlightUnits.make(for: line)
+            let units = highlightUnits(for: line)
             return units.isEmpty ? LyricHighlightUnits.untimedMotionUnits(line.text) : units.map(\.text)
         }
         return LyricSharedText.match(parts(model.lyrics.lyrics[index - 1]), parts(line))
@@ -649,6 +696,10 @@ enum SongColorOverride {
 
 enum FloatingLyricsTone {
     static let unplayedOpacity = 0.38
+    static func projectionStrength(sung: Double, focus: Double) -> Double {
+        min(1, max(0, sung)) * min(1, max(0, focus))
+    }
+
     static func bloomGain(intensity: Double) -> Double {
         min(1, max(0, (intensity - 3) / 3))
     }
@@ -755,6 +806,7 @@ private struct HoverPlaybackButton: View {
     let symbol: String
     let label: String
     let color: Color
+    let glowColor: Color
     let opacity: Double
     let controlsVisible: Bool
     let glowIntensity: Double
@@ -777,8 +829,8 @@ private struct HoverPlaybackButton: View {
                 .foregroundStyle(color.opacity(controlsVisible ? opacity * (isHovered ? 1 : FloatingLyricsTone.unplayedOpacity) : 0))
                 .shadow(color: projectionColor.opacity(controlsVisible ? projectionOpacity * opacity : 0), radius: 2.5 * fontScale, y: 1.5 * fontScale)
                 .shadow(color: .black.opacity(controlsVisible ? shadowOpacity * opacity : 0), radius: 2 * fontScale, y: 0.5 * fontScale)
-                .shadow(color: color.opacity(isHovered ? min(1, glowIntensity * 0.22) * opacity : 0), radius: glowRadius)
-                .shadow(color: color.opacity(isHovered ? min(1, glowIntensity * 0.16) * opacity : 0), radius: glowRadius * 0.28)
+                .shadow(color: glowColor.opacity(isHovered ? min(1, glowIntensity * 0.22) * opacity : 0), radius: glowRadius)
+                .shadow(color: glowColor.opacity(isHovered ? min(1, glowIntensity * 0.16) * opacity : 0), radius: glowRadius * 0.28)
                 .frame(width: max(20, 24 * fontScale), height: max(20, 24 * fontScale))
                 .contentShape(Rectangle())
                 .background { DesktopHoverControlRegion() }
@@ -815,6 +867,10 @@ private struct HoverPlaybackButton: View {
         .onHover { isHovered = $0 }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: isHovered)
     }
+}
+
+enum WaitingDotsLayout {
+    static func width(diameter: CGFloat) -> CGFloat { diameter * 4.3 }
 }
 
 /// Clock-driven, staggered breathing dots. The timeline sleeps while paused
@@ -931,12 +987,16 @@ struct LyricCharacterTiming: TextAttribute {
         0.25 + min(0.95, max(0, end - start - 0.4) * 0.2)
     }
 
-    // Raise the highlight smoothly as an actively sung note is held.
+    // Only very long notes receive an extra white lift. Ordinary notes keep
+    // their existing color and glow, without gradually washing toward white.
     func sustainedBrightness(at time: TimeInterval) -> Double {
-        guard end > start, time >= start, time < end + glowReleaseDuration else { return 0 }
-        let elapsed = max(0, min(time, end) - start - 0.25)
+        let duration = end - start
+        guard duration.isFinite, duration > 1, time >= start, time < end + glowReleaseDuration else { return 0 }
+        let ramp = min(1, max(0, duration - 1))
+        let durationWeight = ramp * ramp * (3 - 2 * ramp)
+        let elapsed = max(0, min(time, end) - start - 1)
         let release = min(1, max(0, (time - end) / glowReleaseDuration))
-        return 0.45 * (1 - exp(-elapsed / 1.5)) * (1 - release * release * (3 - 2 * release))
+        return 0.45 * durationWeight * (1 - exp(-elapsed / 1.5)) * (1 - release * release * (3 - 2 * release))
     }
 
     func completedDimming(at time: TimeInterval) -> Double {
@@ -998,7 +1058,7 @@ private struct FloatingCharacterRenderer: TextRenderer {
                    bottom: drawingPadding, trailing: drawingPadding)
     }
 
-    private enum Pass { case text, outline, halo, core, brightness }
+    private enum Pass { case text, outline, halo, core, brightness, projection }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         let runTimings = layout.flatMap { line in line.map { $0[LyricCharacterTiming.self] } }
@@ -1012,7 +1072,7 @@ private struct FloatingCharacterRenderer: TextRenderer {
                 var projection = context
                 projection.addFilter(.shadow(color: projectionColor.opacity(projectionOpacity), radius: 2.5, y: 1.5, options: .shadowOnly))
                 projection.drawLayer { layer in
-                    drawRuns(layout: layout, in: &layer, pass: .text, strengths: strengths, totalGlyphs: totalGlyphs)
+                    drawRuns(layout: layout, in: &layer, pass: .projection, strengths: strengths, totalGlyphs: totalGlyphs)
                 }
             }
             return
@@ -1099,7 +1159,12 @@ private struct FloatingCharacterRenderer: TextRenderer {
                 let sustained = timing?.glowStrength(at: time) ?? 0
                 let currentStrength = strengths[runIndex]
                 runIndex += 1
-                if (pass == .text || pass == .outline) && currentStrength > 0 {
+                if pass == .projection {
+                    let amount = FloatingLyricsTone.projectionStrength(sung: timing?.progress(at: time) ?? 0, focus: focus)
+                    if amount <= 0.001 { index += run.count; continue }
+                    runContext.opacity *= amount
+                }
+                if (pass == .text || pass == .outline || pass == .projection) && currentStrength > 0 {
                     runContext.opacity *= FloatingLyricsTone.completedOpacityMultiplier(currentStrength: currentStrength)
                 }
                 if pass == .brightness {

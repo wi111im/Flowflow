@@ -139,10 +139,12 @@ actor QQMusicLyricsService {
                   LyricsQuality.artistsMatch([artist], song.artist) else { continue }
             if !seeds.contains(where: { $0.0 == id }) { seeds.append((id, item["mid"] as? String ?? "")) }
         }
-        if seeds.isEmpty {
-            // The lyric catalogue can find songs omitted by the smartbox search.
-            seeds = try await searchLyricCatalogue(song)
-        }
+        // Both searches may find different verified versions of the same song.
+        do {
+            for seed in try await searchLyricCatalogue(song) where !seeds.contains(where: { $0.0 == seed.0 }) {
+                seeds.append(seed)
+            }
+        } catch { try Task.checkCancellation() }
         // Fetch catalogue details before any lyrics: never accept an unverified duration.
         guard !seeds.isEmpty else { return [] }
         var detailRequests = [String: Any]()
@@ -163,7 +165,7 @@ actor QQMusicLyricsService {
                 versionTitle: [track["title"] as? String ?? "", track["subtitle"] as? String ?? ""].joined(separator: " "))
             if let score = candidate.matchScore(for: song) { matched.append((candidate, score)) }
         }
-        let selected = Array(matched.sorted { $0.1 > $1.1 }.prefix(3))
+        let selected = Array(matched.sorted { $0.1 > $1.1 }.prefix(6))
         guard !selected.isEmpty else { return [] }
         var requests = [String: Any]()
         for (index, pair) in selected.enumerated() {

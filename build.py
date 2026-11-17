@@ -41,8 +41,8 @@ subprocess.run(['xcrun', 'swiftc', '-swift-version', '5', '-O', '-target', 'arm6
 (APP / 'Contents/Info.plist').write_bytes(plistlib.dumps({
     'CFBundleName': 'Flowflow', 'CFBundleDisplayName': 'Flowflow',
     'CFBundleIdentifier': 'local.flowflow.desktop', 'CFBundleExecutable': 'Flowflow',
-    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.113',
-    'CFBundleVersion': '114', 'LSMinimumSystemVersion': '15.0',
+    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.137',
+    'CFBundleVersion': '138', 'LSMinimumSystemVersion': '15.0',
     'LSUIElement': True, 'NSHighResolutionCapable': True,
     'CFBundleDevelopmentRegion': 'zh-Hans', 'CFBundleLocalizations': ['zh-Hans'],
     'NSHumanReadableCopyright': 'Includes MeloX (GPL-3.0) and MediaRemote Adapter (BSD-3-Clause).',
@@ -53,7 +53,7 @@ local_identity = 'Flowflow Local Code Signing'
 signing_identity = os.environ.get('FLOWFLOW_SIGNING_IDENTITY') or (local_identity if f'"{local_identity}"' in identity_listing else '-')
 print(f'Code signing identity: {signing_identity}', flush=True)
 for attempt in range(3):
-    for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork']:
+    for attribute in ['com.apple.FinderInfo', 'com.apple.ResourceFork', 'com.apple.fileprovider.fpfs#P']:
         subprocess.run(['xattr', '-rd', attribute, str(APP)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     signed = subprocess.run(['codesign', '--force', '--deep', '--sign', signing_identity, str(APP)])
     if signed.returncode == 0:

@@ -159,8 +159,10 @@ enum LyricsQuality {
         guard let current, !current.lines.isEmpty else { return true }
         let baseline = assess(current.lines, duration: duration)
         if !baseline.usable { return true }
-        // Require a meaningful improvement; ties keep the original provider.
-        return proposed.timedCoverage >= 0.65 && proposed.granularity >= 0.45
-            && proposed.score > baseline.score + 5
+        // Favor genuinely timed, usable lyrics over line-only lyrics. Keep
+        // a small margin to avoid replacing the same quality with another source.
+        if proposed.timedCoverage > baseline.timedCoverage + 0.05 && proposed.granularity >= 0.45 { return true }
+        if baseline.timedCoverage > proposed.timedCoverage + 0.05 && baseline.granularity >= 0.45 { return false }
+        return proposed.score > baseline.score + 5
     }
 }

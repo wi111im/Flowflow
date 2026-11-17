@@ -33,6 +33,7 @@ NSDictionary *internal_get(BOOL isTestMode) {
 
     __block NSMutableDictionary *liveData = [NSMutableDictionary dictionary];
     __block BOOL isFromTestClient = NO;
+    __block int initialPID = 0;
 
     dispatch_group_t group = dispatch_group_create();
 
@@ -40,6 +41,7 @@ NSDictionary *internal_get(BOOL isTestMode) {
     dispatch_group_enter(group);
     g_mediaRemote.getNowPlayingApplicationPID(
         g_serialdispatchQueue, ^(int pid) {
+          initialPID = pid;
           if (pid != 0) {
               liveData[kMRAProcessIdentifier] = @(pid);
               bool ok = appForPID(pid, ^(NSRunningApplication *process) {
@@ -55,6 +57,12 @@ NSDictionary *internal_get(BOOL isTestMode) {
               dispatch_group_leave(group);
           }
         });
+
+    // Finish identifying the owner before requesting metadata. The global
+    // now-playing app may change while the asynchronous calls are in flight.
+    if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, GET_TIMEOUT_MILLIS * NSEC_PER_MSEC)) != 0 || initialPID == 0) {
+        return nil;
+    }
 
     // Now Playing Client
     dispatch_group_enter(group);
@@ -110,6 +118,17 @@ NSDictionary *internal_get(BOOL isTestMode) {
     }
 
     if (isFromTestClient) {
+        return nil;
+    }
+
+    __block int finalPID = 0;
+    dispatch_group_enter(group);
+    g_mediaRemote.getNowPlayingApplicationPID(g_serialdispatchQueue, ^(int pid) {
+        finalPID = pid;
+        dispatch_group_leave(group);
+    });
+    if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, GET_TIMEOUT_MILLIS * NSEC_PER_MSEC)) != 0 ||
+        finalPID != initialPID) {
         return nil;
     }
 

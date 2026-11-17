@@ -18,6 +18,26 @@ enum DesktopFloatingLyricsWindowMetrics {
     static let defaultHeight: CGFloat = 132
     static let minimumWidth: CGFloat = 300
     static let minimumHeight: CGFloat = 112
+
+    static func availableTextWidth(windowWidth: CGFloat, inset: CGFloat) -> CGFloat {
+        max(1, windowWidth - 2 * inset)
+    }
+
+    static func horizontalCorrection(for ink: NSRect, in screen: NSRect) -> CGFloat {
+        guard ink.width <= screen.width else { return screen.midX - ink.midX }
+        if ink.minX < screen.minX { return screen.minX - ink.minX }
+        if ink.maxX > screen.maxX { return screen.maxX - ink.maxX }
+        return 0
+    }
+
+    static func contained(_ frame: NSRect, in screen: NSRect) -> NSRect {
+        var result = frame
+        result.size.width = min(result.width, screen.width)
+        result.size.height = min(result.height, screen.height)
+        result.origin.x = min(max(result.minX, screen.minX), screen.maxX - result.width)
+        result.origin.y = min(max(result.minY, screen.minY), screen.maxY - result.height)
+        return result
+    }
 }
 
 private final class DesktopFloatingLyricsWindowConfigurationView: NSView {
@@ -51,7 +71,7 @@ private final class DesktopFloatingLyricsWindowConfigurationView: NSView {
             in: window.contentView, screenPoint: pointer, window: window)
         let overControl = mayHit && DesktopHoverControlView.containsControl(
             in: window.contentView, screenPoint: pointer, window: window)
-        let nextHover = controlsEnabled && overControl
+        let nextHover = controlsEnabled && (overInk || overControl)
         if nextHover != hovering { hovering = nextHover; onHoverChange?(nextHover) }
         let ignoresMouseEvents = !(overInk || overControl)
         if window.ignoresMouseEvents != ignoresMouseEvents { window.ignoresMouseEvents = ignoresMouseEvents }
