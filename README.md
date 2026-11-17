@@ -15,7 +15,7 @@ Flowflow 是 macOS 上的悬浮歌词工具。它读取网易云音乐、QQ 音�
 
 当前版本面向 Apple Silicon Mac，需要 macOS 15 或更高版本。播放信息来自已安装并运行的受支持播放器；在线歌词是否可用取决于歌曲和服务状态。
 
-[下载 Flowflow 1.0.137（macOS，Apple Silicon）](https://github.com/wi111im/Flowflow/releases/download/v1.0.137/Flowflow-1.0.137-macOS-arm64.zip)
+[下载 Flowflow 1.0.138（macOS，Apple Silicon）](https://github.com/wi111im/Flowflow/releases/download/v1.0.138/Flowflow-1.0.138-macOS-arm64.zip)
 
 从源码构建需要 Xcode 命令行工具和 Python 3：
 

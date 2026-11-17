@@ -41,8 +41,8 @@ subprocess.run(['xcrun', 'swiftc', '-swift-version', '5', '-O', '-target', 'arm6
 (APP / 'Contents/Info.plist').write_bytes(plistlib.dumps({
     'CFBundleName': 'Flowflow', 'CFBundleDisplayName': 'Flowflow',
     'CFBundleIdentifier': 'local.flowflow.desktop', 'CFBundleExecutable': 'Flowflow',
-    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.137',
-    'CFBundleVersion': '138', 'LSMinimumSystemVersion': '15.0',
+    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.138',
+    'CFBundleVersion': '139', 'LSMinimumSystemVersion': '15.0',
     'LSUIElement': True, 'NSHighResolutionCapable': True,
     'CFBundleDevelopmentRegion': 'zh-Hans', 'CFBundleLocalizations': ['zh-Hans'],
     'NSHumanReadableCopyright': 'Includes MeloX (GPL-3.0) and MediaRemote Adapter (BSD-3-Clause).',

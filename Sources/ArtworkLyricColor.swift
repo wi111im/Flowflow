@@ -20,25 +20,11 @@ enum ArtworkLyricColor {
             func component(_ c: Double) -> Double { base + (c - floor) / chroma * value * saturation }
             return (component(r), component(g), component(b))
         }
-        func linear(_ value: Double) -> Double {
-            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
-        }
-        func luminance(_ c: (Double, Double, Double)) -> Double {
-            0.2126 * linear(c.0) + 0.7152 * linear(c.1) + 0.0722 * linear(c.2)
-        }
-        let target = 0.27
-        var adjusted = color
-        if luminance(color) < target {
-            let endpoint = 1.0
-            var low = 0.0, high = 1.0
-            for _ in 0..<20 {
-                let t = (low + high) / 2
-                let mixed = (r + (endpoint - r) * t, g + (endpoint - g) * t, b + (endpoint - b) * t)
-                if luminance(mixed) >= target { high = t } else { low = t }
-            }
-            adjusted = (r + (endpoint - r) * high, g + (endpoint - g) * high, b + (endpoint - b) * high)
-        }
-        return adjusted
+        // Raise only the color's own intensity when it is too dark. Mixing
+        // white into the color makes saturated blues and reds look washed out.
+        let peak = max(r, g, b)
+        let factor = peak < 0.78 ? 0.78 / peak : 1
+        return (r * factor, g * factor, b * factor)
     }
 
     static func adaptiveTextColor(_ color: Color, dark: Bool) -> Color {

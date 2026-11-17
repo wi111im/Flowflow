@@ -189,6 +189,12 @@ import AppKit
             precondition(max(result.0, result.1, result.2) >= 0.8)
             precondition(max(result.0, result.1, result.2) > max(sample.0, sample.1, sample.2))
         }
+        let deepBlue = ArtworkLyricColor.adaptiveText((0, 0.1, 0.8), dark: true)
+        precondition(deepBlue.0 == 0 && abs(deepBlue.1 - 0.1) < 0.0001 && deepBlue.2 == 0.8)
+        let darkRed = ArtworkLyricColor.adaptiveText((0.2, 0, 0), dark: true)
+        precondition(abs(darkRed.0 - 0.78) < 0.0001 && darkRed.1 == 0 && darkRed.2 == 0)
+        let softGreen = ArtworkLyricColor.adaptiveText((0.12, 0.4, 0.2), dark: true)
+        precondition(abs(softGreen.0 / softGreen.1 - 0.3) < 0.0001 && abs(softGreen.1 - 0.78) < 0.0001)
         let unchangedDark = ArtworkLyricColor.adaptiveText((0.9, 0.6, 0.6), dark: true)
         precondition(unchangedDark.0 == 0.9 && unchangedDark.1 == 0.6 && unchangedDark.2 == 0.6)
         print("PASS: lyric colors adapt to appearance while retaining hue")
